@@ -1,0 +1,44 @@
+.analytics-shell { max-width: 1320px; }
+.analytics-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 13px; margin: 24px 0 20px; padding: 18px; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
+.analytics-filters label { display: grid; gap: 6px; color: #66788b; font-size: 11px; font-weight: 700; }
+.analytics-filters input, .analytics-filters select { min-width: 160px; min-height: 41px; padding: 0 10px; border: 1px solid #dce5ee; border-radius: 6px; color: var(--ink); background: #fff; }
+.analytics-status { margin: 24px 0; color: var(--muted); font-size: 13px; }
+.analytics-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; margin: 19px 0 22px; }
+.analytics-kpi { display: grid; gap: 11px; min-height: 97px; padding: 17px; border: 1px solid var(--line); border-radius: 9px; background: #fff; box-shadow: 0 3px 12px rgb(31 51 73 / 3%); }
+.analytics-kpi span { color: #728092; font-size: 11px; font-weight: 600; }
+.analytics-kpi strong { color: #1c3853; font: 800 25px Manrope, sans-serif; }
+.analytics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.analytics-card { min-width: 0; min-height: 245px; padding: 19px; border: 1px solid var(--line); border-radius: 9px; background: #fff; box-shadow: 0 3px 12px rgb(31 51 73 / 3%); }
+.analytics-card h2 { margin: 0 0 20px; color: #263d53; font: 700 15px Manrope, sans-serif; }
+.analytics-card-wide { grid-column: 1 / -1; }
+.analytics-chart { min-height: 130px; }
+.chart-empty { margin: 40px 0; color: #8a98a8; font-size: 12px; text-align: center; }
+.chart-bars, .activity-bars { display: grid; gap: 14px; margin: 0; padding: 0; list-style: none; }
+.chart-bar-row { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(90px, 2fr) 72px; align-items: center; gap: 12px; }
+.chart-label { overflow: hidden; color: #718094; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.chart-track { display: block; height: 9px; overflow: hidden; border-radius: 8px; background: #eff3f7; }
+.chart-bar { display: block; height: 100%; border-radius: inherit; background: #367bdc; }
+.chart-value { color: #364d63; font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
+.chart-legend { display: flex; gap: 17px; margin: -8px 0 15px; color: #7a8999; font-size: 10px; }
+.chart-legend span::before { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: #367bdc; content: ""; }
+.chart-legend span:nth-child(2)::before { background: #27a182; }
+.chart-legend span:nth-child(3)::before { background: #f0ab4a; }
+.activity-bar-row { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(120px, 4fr) 42px; align-items: center; gap: 12px; }
+.activity-segments { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
+.activity-segment { display: block; height: 5px; min-width: 0; border-radius: 6px; }
+.segment-meetings { background: #367bdc; }
+.segment-calls { background: #27a182; }
+.segment-followups { background: #f0ab4a; }
+.chart-footnote { margin: 18px 0 0; color: #7a8999; font-size: 11px; }
+.analytics-summary { display: flex; justify-content: space-between; gap: 16px; margin-top: 16px; padding: 18px 20px; border: 1px solid var(--line); border-radius: 9px; color: #718094; background: #fff; font-size: 12px; }
+.analytics-summary strong { color: #1c3853; font: 700 16px Manrope, sans-serif; }
+.analytics-error { padding: 14px 16px; border: 1px solid #f1caca; border-radius: 7px; color: #9d3d3d; background: #fff4f4; font-size: 12px; }
+@media (max-width: 760px) {
+  .analytics-filters { align-items: stretch; flex-direction: column; }
+  .analytics-filters input, .analytics-filters select { width: 100%; }
+  .analytics-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .analytics-grid { grid-template-columns: 1fr; }
+  .analytics-card-wide { grid-column: auto; }
+  .chart-bar-row { grid-template-columns: minmax(75px, 1fr) minmax(65px, 1.5fr) 58px; gap: 8px; }
+  .activity-bar-row { grid-template-columns: 75px minmax(65px, 1fr) 30px; gap: 8px; }
+}

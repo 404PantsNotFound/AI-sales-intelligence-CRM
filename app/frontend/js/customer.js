@@ -1,0 +1,1305 @@
+import {
+  createCall,
+  createFollowup,
+  createMeeting,
+  cancelAgentAction,
+  chatWithAgent,
+  confirmAgentAction,
+  generateCustomerSummary,
+  generateMeetingBrief,
+  getCustomerActivity,
+  getCustomerOverview,
+  getCustomers,
+  requireAuth,
+  updateFollowup,
+} from "./api.js";
+import {
+  displayValue,
+  element,
+  formatDate,
+  humanize,
+  initials,
+  mountAuthControls,
+} from "./common.js";
+
+const searchForm = document.querySelector("#customer-search-form");
+const searchInput = document.querySelector("#customer-search");
+const resultList = document.querySelector("#customer-results");
+const searchState = document.querySelector("#search-state");
+const detailPanel = document.querySelector("#customer-detail");
+const resultCount = document.querySelector("#result-count");
+const pagination = document.querySelector("#pagination");
+const previousPage = document.querySelector("#previous-page");
+const nextPage = document.querySelector("#next-page");
+const pageIndicator = document.querySelector("#page-indicator");
+const activityDialog = document.querySelector("#activity-dialog");
+import { renderMarkdown } from "./markdown.js";
+
+const activityForm = document.querySelector("#activity-form");
+const activityFields = document.querySelector("#activity-fields");
+const activityDialogTitle = document.querySelector("#activity-dialog-title");
+const activityFormError = document.querySelector("#activity-form-error");
+const saveActivityButton = document.querySelector("#save-activity");
+const meetingBriefDialog = document.querySelector("#meeting-brief-dialog");
+const meetingBriefContent = document.querySelector("#meeting-brief-content");
+const PAGE_SIZE = 20;
+
+let currentPage = 1;
+let currentSearch = "";
+let totalPages = 1;
+let selectedCustomerId = null;
+let selectedCustomer = null;
+let activityFilter = "";
+let activityStartDate = "";
+let activityEndDate = "";
+let selectedActivityKind = "";
+let filteredActivity = [];
+let isSavingActivity = false;
+let aiSummary = null;
+let aiSummaryError = "";
+let aiSummaryLoading = false;
+let meetingBriefLoadingId = null;
+let agentChatMessages = [];
+let agentChatLoading = false;
+let agentActionLoading = false;
+let pendingAgentAction = null;
+let agentActionNotice = "";
+
+function resetCustomerAiState({ cancelPending = true } = {}) {
+  if (cancelPending && pendingAgentAction?.action_id) {
+    const staleActionId = pendingAgentAction.action_id;
+    void cancelAgentAction(staleActionId).catch(() => {});
+  }
+  aiSummary = null;
+  aiSummaryError = "";
+  aiSummaryLoading = false;
+  meetingBriefLoadingId = null;
+  agentChatMessages = [];
+  agentChatLoading = false;
+  agentActionLoading = false;
+  pendingAgentAction = null;
+  agentActionNotice = "";
+  if (meetingBriefDialog?.open) {
+    meetingBriefDialog.close();
+  }
+}
+
+function showSearchState(message, error = false) {
+  resultList.replaceChildren();
+  searchState.hidden = false;
+  searchState.replaceChildren(
+    element("span", "empty-icon", error ? "!" : "⌕"),
+    element("p", error ? "detail-api-error" : "", message),
+  );
+  pagination.hidden = true;
+  resultCount.textContent = "";
+}
+
+function setDetailMessage(message, { error = false, loading = false } = {}) {
+  detailPanel.replaceChildren();
+  const state = element("div", `empty-state detail-empty${error ? " detail-error" : ""}`);
+  state.append(
+    element("span", "empty-icon", error ? "!" : loading ? "…" : "◎"),
+    element(
+      "h2",
+      "",
+      error ? "Unable to load customer data." : loading ? message : "No customer selected",
+    ),
+  );
+  if (error || !loading) {
+    state.append(element("p", error ? "detail-api-error" : "", message));
+  }
+  detailPanel.append(state);
+}
+
+function statusClass(value) {
+  return `status-badge status-${String(value ?? "").toLowerCase().replace(/[^a-z0-9_-]/g, "")}`;
+}
+
+function renderCustomerList(data) {
+  resultList.replaceChildren();
+  searchState.hidden = true;
+  resultCount.textContent = `${data.total} ${data.total === 1 ? "record" : "records"}`;
+  totalPages = Math.max(1, Math.ceil(data.total / PAGE_SIZE));
+  pagination.hidden = data.total === 0;
+  pageIndicator.textContent = `Page ${data.page} of ${totalPages}`;
+  previousPage.disabled = data.page <= 1;
+  nextPage.disabled = data.page >= totalPages;
+
+  for (const customer of data.items) {
+    const button = element("button", "customer-result");
+    button.type = "button";
+    button.dataset.customerId = String(customer.customer_id);
+    button.setAttribute("aria-current", String(customer.customer_id) === String(selectedCustomerId));
+    button.append(
+      element("span", "customer-avatar", initials(customer.customer_name)),
+    );
+    const copy = element("span", "result-copy");
+    copy.append(
+      element("span", "result-name", displayValue(customer.customer_name)),
+      element("span", "result-company", displayValue(customer.company?.company_name)),
+    );
+    button.append(copy, element("span", "result-arrow", "›"));
+    resultList.append(button);
+  }
+
+  if (data.total === 0) showSearchState("No customers found.");
+}
+
+async function loadCustomers(page = 1) {
+  currentPage = page;
+  showSearchState("Loading customers...");
+  try {
+    const data = await getCustomers({
+      search: currentSearch,
+      page: currentPage,
+      page_size: PAGE_SIZE,
+    });
+    renderCustomerList(data);
+  } catch {
+    showSearchState("Unable to load customer data.", true);
+  }
+}
+
+function appendInfoGrid(parent, entries, className = "profile-grid") {
+  const grid = element("dl", className);
+  for (const [label, value] of entries) {
+    const item = element("div", "info-item");
+    item.append(
+      element("dt", "", label),
+      element("dd", "", displayValue(value)),
+    );
+    grid.append(item);
+  }
+  parent.append(grid);
+}
+
+function appendSection(parent, title, count = null) {
+  const section = element("section", "detail-section");
+  const heading = element("div", "detail-section-heading");
+  heading.append(element("h3", "", title));
+  if (count !== null) heading.append(element("span", "", String(count)));
+  section.append(heading);
+  parent.append(section);
+  return section;
+}
+
+function makeActionButton(label, className, onClick) {
+  const button = element("button", className, label);
+  button.type = "button";
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function appendActivityToolbar(section, count) {
+  const heading = section.querySelector(".detail-section-heading");
+  const controls = element("div", "activity-toolbar");
+  controls.append(element("span", "activity-count", `${count} activities`));
+  const filter = element("select", "activity-filter");
+  filter.setAttribute("aria-label", "Filter activity timeline");
+  for (const [value, label] of [
+    ["", "All activities"],
+    ["enquiry", "Enquiries"],
+    ["meeting", "Meetings"],
+    ["call", "Calls"],
+    ["follow_up", "Follow-ups"],
+  ]) {
+    const option = element("option", "", label);
+    option.value = value;
+    filter.append(option);
+  }
+  filter.value = activityFilter;
+  const startDate = element("input", "activity-date-filter");
+  startDate.type = "date";
+  startDate.value = activityStartDate;
+  startDate.setAttribute("aria-label", "Activity start date");
+  const endDate = element("input", "activity-date-filter");
+  endDate.type = "date";
+  endDate.value = activityEndDate;
+  endDate.setAttribute("aria-label", "Activity end date");
+  const applyButton = makeActionButton(
+    "Apply",
+    "timeline-apply-button",
+    () => loadFilteredActivity(section, controls),
+  );
+  filter.addEventListener("change", () => loadFilteredActivity(section, controls));
+  controls.append(filter, startDate, endDate, applyButton);
+  heading.append(controls);
+}
+
+async function loadFilteredActivity(section, controls) {
+  const filter = controls.querySelector(".activity-filter");
+  const startDate = controls.querySelector('[aria-label="Activity start date"]');
+  const endDate = controls.querySelector('[aria-label="Activity end date"]');
+  const applyButton = controls.querySelector(".timeline-apply-button");
+  activityFilter = filter.value;
+  activityStartDate = startDate.value;
+  activityEndDate = endDate.value;
+  filter.disabled = true;
+  startDate.disabled = true;
+  endDate.disabled = true;
+  applyButton.disabled = true;
+  try {
+    const result = await getCustomerActivity(selectedCustomerId, {
+      type: activityFilter,
+      start_date: activityStartDate,
+      end_date: activityEndDate,
+    });
+    filteredActivity = result.items ?? [];
+    controls.querySelector(".activity-count").textContent =
+      `${filteredActivity.length} ${filteredActivity.length === 1 ? "activity" : "activities"}`;
+    renderActivityTimeline(section);
+  } catch (error) {
+    section.querySelector(".timeline-list")?.remove();
+    section.querySelector(".section-empty")?.remove();
+    section.append(
+      element("p", "section-empty detail-api-error", error.message || "Unable to load customer data."),
+    );
+  } finally {
+    filter.disabled = false;
+    startDate.disabled = false;
+    endDate.disabled = false;
+    applyButton.disabled = false;
+  }
+}
+
+function renderActivityTimeline(section) {
+  section.querySelector(".timeline-list")?.remove();
+  section.querySelector(".section-empty")?.remove();
+  if (filteredActivity.length === 0) {
+    section.append(element("p", "section-empty", "No activity yet."));
+    return;
+  }
+  const list = element("ol", "timeline-list");
+  for (const activity of filteredActivity) {
+    const item = element("li", `timeline-item timeline-${activity.activity_type}`);
+    const marker = element("span", "timeline-marker", timelineSymbol(activity.activity_type));
+    const body = element("div", "timeline-body");
+    const top = element("div", "timeline-top");
+    const titleGroup = element("div", "timeline-title-group");
+    titleGroup.append(
+      element("span", "timeline-type", humanize(activity.activity_type)),
+      element("strong", "timeline-title", displayValue(activity.title)),
+    );
+    top.append(
+      titleGroup,
+      element("span", statusClass(activity.status), humanize(activity.status)),
+    );
+    body.append(
+      top,
+      element("time", "timeline-date", formatDateTime(activity.activity_date)),
+    );
+    if (activity.description) {
+      body.append(element("p", "timeline-description", activity.description));
+    }
+    item.append(marker, body);
+    list.append(item);
+  }
+  section.append(list);
+}
+
+function timelineSymbol(type) {
+  return { enquiry: "E", meeting: "M", call: "C", follow_up: "F" }[type] ?? "•";
+}
+
+function formatDateTime(value) {
+  if (!value) return "Date not available";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Date not available";
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function appendListBlock(parent, title, items, emptyText, className = "ai-facts") {
+  const block = element("div", `ai-block ${className}`);
+  block.append(element("h4", "", title));
+  const values = Array.isArray(items) ? items.filter((item) => item) : [];
+  if (values.length === 0) {
+    block.append(element("p", "", emptyText));
+  } else {
+    const list = element("ul", "ai-list");
+    for (const item of values) {
+      const listItem = element("li", "");
+      renderMarkdown(listItem, displayValue(item));
+      list.append(listItem);
+    }
+    block.append(list);
+  }
+  parent.append(block);
+}
+
+function aiErrorMessage(error) {
+  if (error?.code === "llm_not_configured") {
+    return error.message || "The AI assistant is not configured.";
+  }
+  if (error?.status === 404) {
+    return error.message || "The requested CRM record was not found.";
+  }
+  return error?.message || "Unable to generate AI output.";
+}
+
+const agentActionLabels = {
+  create_meeting: "Create meeting",
+  create_followup: "Create follow-up",
+  record_call_result: "Record call result",
+  complete_followup: "Complete follow-up",
+};
+
+function appendAgentChat(parent, customer) {
+  const chat = element("section", "agent-chat");
+  chat.append(
+    element("h3", "", "Ask the CRM assistant"),
+    element(
+      "p",
+      "ai-status",
+      "Ask about this customer or request an action. CRM changes always require your confirmation.",
+    ),
+  );
+  const messages = element("div", "agent-chat-messages");
+  messages.setAttribute("aria-live", "polite");
+  for (const item of agentChatMessages) {
+    const message = element("div", `agent-chat-message agent-chat-${item.role}`);
+    if (item.role === "assistant") {
+      message.classList.add("ai-markdown");
+      renderMarkdown(message, item.text);
+    } else {
+      message.textContent = item.text;
+    }
+    messages.append(message);
+  }
+  chat.append(messages);
+
+  if (agentChatLoading) {
+    chat.append(element("p", "ai-status", "Assistant is working…"));
+  }
+  if (agentActionNotice) {
+    chat.append(element("p", "agent-action-notice", agentActionNotice));
+  }
+  if (pendingAgentAction) {
+    appendPendingActionCard(chat, pendingAgentAction, customer);
+  }
+
+  const form = element("form", "agent-chat-form");
+  const input = element("textarea", "agent-chat-input");
+  input.name = "message";
+  input.rows = 2;
+  input.maxLength = 4000;
+  input.placeholder = "Ask a question or request an action…";
+  input.required = true;
+  input.disabled = agentChatLoading || Boolean(pendingAgentAction);
+  const submit = element(
+    "button",
+    "button button-primary",
+    agentChatLoading ? "Sending…" : "Send",
+  );
+  submit.type = "submit";
+  submit.disabled = input.disabled;
+  form.append(input, submit);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const message = input.value.trim();
+    if (message && !agentChatLoading && !pendingAgentAction) {
+      void sendAgentChatMessage(message, customer.customer_id);
+    }
+  });
+  chat.append(form);
+  parent.append(chat);
+}
+
+function appendPendingActionCard(parent, pending, customer) {
+  const card = element("section", "agent-pending-action");
+  card.setAttribute("aria-label", "Confirm proposed CRM action");
+  card.append(
+    element("p", "eyebrow", "AI ACTION — CONFIRMATION REQUIRED"),
+    element("h4", "", agentActionLabels[pending.action] || "CRM action"),
+  );
+  const payload = pending.payload || {};
+  const details = element("dl", "agent-action-details");
+  const customerName = payload.customer_id === customer.customer_id
+    ? `${customer.customer_name} · ${customer.company?.company_name || "Company unavailable"}`
+    : `Customer #${payload.customer_id}`;
+  const followup = customer.followups?.find(
+    (record) => record.followup_id === payload.followup_id,
+  );
+  const fields = [
+    ["Customer", customerName],
+    ["Follow-up", followup ? `${followup.type}: ${followup.description || "No description"}` : null],
+    ["Date", payload.scheduled_at || payload.due_date || payload.actual_time],
+    ["Duration", payload.duration ? `${payload.duration} minutes` : null],
+    ["Agenda", payload.agenda],
+    ["Type", payload.type],
+    ["Description", payload.description],
+    ["Outcome", payload.outcome],
+    ["Notes", payload.notes],
+  ];
+  for (const [label, value] of fields) {
+    if (!value) continue;
+    const row = element("div");
+    row.append(
+      element("dt", "", label),
+      element(
+        "dd",
+        "",
+        label === "Date" ? formatDateTime(value) : displayValue(value),
+      ),
+    );
+    details.append(row);
+  }
+  card.append(details);
+  const actions = element("div", "agent-action-buttons");
+  const confirm = element(
+    "button",
+    "button button-primary",
+    agentActionLoading ? "Working…" : "Confirm",
+  );
+  confirm.type = "button";
+  confirm.disabled = agentActionLoading;
+  confirm.addEventListener("click", () => {
+    void confirmPendingAgentAction(customer.customer_id);
+  });
+  const cancel = element("button", "button button-secondary", "Cancel");
+  cancel.type = "button";
+  cancel.disabled = agentActionLoading;
+  cancel.addEventListener("click", () => {
+    void cancelPendingAgentAction();
+  });
+  actions.append(confirm, cancel);
+  card.append(actions);
+  parent.append(card);
+}
+
+async function sendAgentChatMessage(message, customerId) {
+  agentChatMessages.push({ role: "user", text: message });
+  agentChatLoading = true;
+  agentActionNotice = "";
+  renderCustomer(selectedCustomer);
+  try {
+    const response = await chatWithAgent(message, customerId);
+    if (String(selectedCustomerId) !== String(customerId)) return;
+    agentChatMessages.push({ role: "assistant", text: response.response });
+    pendingAgentAction = response.pending_action || null;
+  } catch (error) {
+    if (String(selectedCustomerId) !== String(customerId)) return;
+    agentChatMessages.push({
+      role: "assistant",
+      text: aiErrorMessage(error),
+    });
+  } finally {
+    agentChatLoading = false;
+    if (selectedCustomer) renderCustomer(selectedCustomer);
+  }
+}
+
+async function confirmPendingAgentAction(customerId) {
+  if (!pendingAgentAction || agentActionLoading) return;
+  const actionId = pendingAgentAction.action_id;
+  agentActionLoading = true;
+  agentActionNotice = "";
+  renderCustomer(selectedCustomer);
+  try {
+    const result = await confirmAgentAction(actionId);
+    pendingAgentAction = null;
+    agentChatMessages.push({
+      role: "assistant",
+      text: result.message || (result.status === "completed" ? "Action completed." : "Action failed."),
+    });
+    if (result.status === "completed") {
+      await refreshSelectedCustomer();
+    }
+  } catch (error) {
+    agentActionNotice = aiErrorMessage(error);
+    if (error?.status === 404 || error?.status === 410) {
+      pendingAgentAction = null;
+    }
+  } finally {
+    agentActionLoading = false;
+    if (selectedCustomer && String(selectedCustomerId) === String(customerId)) {
+      renderCustomer(selectedCustomer);
+    }
+  }
+}
+
+async function cancelPendingAgentAction() {
+  if (!pendingAgentAction || agentActionLoading) return;
+  const actionId = pendingAgentAction.action_id;
+  agentActionLoading = true;
+  agentActionNotice = "";
+  renderCustomer(selectedCustomer);
+  try {
+    const result = await cancelAgentAction(actionId);
+    pendingAgentAction = null;
+    agentChatMessages.push({ role: "assistant", text: result.message });
+  } catch (error) {
+    agentActionNotice = aiErrorMessage(error);
+    if (error?.status === 404 || error?.status === 410) {
+      pendingAgentAction = null;
+    }
+  } finally {
+    agentActionLoading = false;
+    if (selectedCustomer) renderCustomer(selectedCustomer);
+  }
+}
+
+function appendAiIntelligence(parent, customer) {
+  const section = appendSection(parent, "AI customer intelligence");
+  const panel = element("div", "ai-intelligence");
+  const actions = element("div", "ai-actions");
+  const summaryButton = makeActionButton(
+    aiSummaryLoading ? "Generating…" : "Generate AI Summary",
+    "small-action-button",
+    () => generateSummary(customer.customer_id),
+  );
+  summaryButton.disabled = aiSummaryLoading;
+  const meetingButton = makeActionButton(
+    meetingBriefLoadingId ? "Preparing…" : "Prepare Me for Meeting",
+    "small-action-button",
+    () => prepareLatestMeeting(customer),
+  );
+  meetingButton.disabled = Boolean(meetingBriefLoadingId);
+  actions.append(summaryButton, meetingButton);
+  panel.append(actions);
+
+  if (aiSummaryLoading) {
+    panel.append(element("p", "ai-status", "Generating customer summary…"));
+  } else if (aiSummaryError) {
+    panel.append(element("p", "detail-api-error", aiSummaryError));
+  } else if (aiSummary) {
+    const output = element("div", "ai-output");
+    const summaryBlock = element("div", "ai-block ai-facts");
+    summaryBlock.append(element("h4", "", "Customer summary"));
+    const summary = element("div", "ai-markdown");
+    renderMarkdown(summary, displayValue(aiSummary.summary, "Summary unavailable."));
+    summaryBlock.append(summary);
+    output.append(summaryBlock);
+    appendListBlock(output, "Key points", aiSummary.key_points, "No key points available.");
+    appendListBlock(output, "Customer concerns", aiSummary.customer_concerns, "No customer concerns recorded.");
+    appendListBlock(output, "Open follow-ups", aiSummary.open_followups, "No open follow-ups.");
+    const recommendation = element("div", "ai-block ai-recommendation");
+    recommendation.append(element("h4", "", "Recommended next action"));
+    const recommendationText = element("div", "ai-markdown");
+    renderMarkdown(
+      recommendationText,
+      displayValue(aiSummary.recommended_next_action, "Recommendation unavailable."),
+    );
+    recommendation.append(recommendationText);
+    output.append(recommendation);
+    if (aiSummary.generated_at) {
+      output.append(element("p", "ai-generated", `Generated ${formatDateTime(aiSummary.generated_at)}`));
+    }
+    panel.append(output);
+  } else {
+    panel.append(element("p", "ai-status", "Generate a summary from this customer's CRM records."));
+  }
+  appendAgentChat(panel, customer);
+  section.append(panel);
+}
+
+async function generateSummary(customerId) {
+  aiSummaryLoading = true;
+  aiSummaryError = "";
+  renderCustomer(selectedCustomer);
+  try {
+    aiSummary = await generateCustomerSummary(customerId);
+  } catch (error) {
+    aiSummary = null;
+    aiSummaryError = aiErrorMessage(error);
+  } finally {
+    aiSummaryLoading = false;
+    if (selectedCustomer) renderCustomer(selectedCustomer);
+  }
+}
+
+function latestMeeting(customer) {
+  const meetings = Array.isArray(customer?.meetings) ? [...customer.meetings] : [];
+  meetings.sort((left, right) => String(right.scheduled_at || "").localeCompare(String(left.scheduled_at || "")));
+  return meetings[0] || null;
+}
+
+async function prepareLatestMeeting(customer) {
+  const meeting = latestMeeting(customer);
+  if (!meeting) {
+    openMeetingBrief({
+      error: "No meetings recorded for this customer.",
+    });
+    return;
+  }
+  await prepareMeeting(meeting.meeting_id);
+}
+
+function renderMeetingBrief(brief) {
+  meetingBriefContent.replaceChildren();
+  if (brief.error) {
+    meetingBriefContent.append(element("p", "detail-api-error", brief.error));
+    return;
+  }
+  if (brief.loading) {
+    meetingBriefContent.append(element("p", "ai-status", "Preparing meeting brief…"));
+    return;
+  }
+  const output = element("div", "ai-output");
+  const facts = element("div", "ai-block ai-facts");
+  facts.append(element("h4", "", "Facts"));
+  const briefText = element("div", "ai-markdown");
+  renderMarkdown(briefText, displayValue(brief.brief, "Brief unavailable."));
+  facts.append(briefText);
+  output.append(facts);
+  const overview = element("div", "ai-block ai-facts");
+  overview.append(element("h4", "", "Customer overview"));
+  const overviewText = element("div", "ai-markdown");
+  renderMarkdown(
+    overviewText,
+    displayValue(brief.customer_overview, "Customer overview unavailable."),
+  );
+  overview.append(overviewText);
+  output.append(overview);
+  const requirement = element("div", "ai-block ai-facts");
+  requirement.append(element("h4", "", "Current requirement"));
+  const requirementText = element("div", "ai-markdown");
+  renderMarkdown(
+    requirementText,
+    displayValue(brief.current_requirement, "Current requirement unavailable."),
+  );
+  requirement.append(requirementText);
+  output.append(requirement);
+  appendListBlock(output, "Previous discussions", brief.previous_discussions, "No previous discussions recorded.");
+  appendListBlock(output, "Unresolved issues", brief.unresolved_issues, "No unresolved issues recorded.");
+  appendListBlock(
+    output,
+    "Recommended talking points",
+    brief.recommended_talking_points,
+    "No talking points available.",
+    "ai-recommendation",
+  );
+  const recommendation = element("div", "ai-block ai-recommendation");
+  recommendation.append(element("h4", "", "Recommended next action"));
+  const recommendationText = element("div", "ai-markdown");
+  renderMarkdown(
+    recommendationText,
+    displayValue(brief.recommended_next_action, "Recommendation unavailable."),
+  );
+  recommendation.append(recommendationText);
+  output.append(recommendation);
+  if (brief.generated_at) {
+    output.append(element("p", "ai-generated", `Generated ${formatDateTime(brief.generated_at)}`));
+  }
+  meetingBriefContent.append(output);
+}
+
+function openMeetingBrief(brief) {
+  renderMeetingBrief(brief);
+  if (!meetingBriefDialog.open) meetingBriefDialog.showModal();
+}
+
+async function prepareMeeting(meetingId) {
+  meetingBriefLoadingId = meetingId;
+  if (selectedCustomer) renderCustomer(selectedCustomer);
+  openMeetingBrief({ loading: true });
+  try {
+    const brief = await generateMeetingBrief(meetingId);
+    openMeetingBrief(brief);
+  } catch (error) {
+    openMeetingBrief({ error: aiErrorMessage(error) });
+  } finally {
+    meetingBriefLoadingId = null;
+    if (selectedCustomer) renderCustomer(selectedCustomer);
+  }
+}
+
+function appendActivities(parent, customer) {
+  const meetings = Array.isArray(customer.meetings) ? customer.meetings : [];
+  const meetingSection = appendSection(parent, "Meetings", meetings.length);
+  meetingSection.querySelector(".detail-section-heading").append(
+    makeActionButton("Schedule meeting", "small-action-button", () => openActivityDialog("meeting")),
+  );
+  if (meetings.length === 0) {
+    meetingSection.append(element("p", "section-empty", "No meetings recorded."));
+  } else {
+    const list = element("div", "activity-record-list");
+    for (const meeting of meetings) {
+      const card = element("article", "activity-record-card");
+      const top = element("div", "activity-record-top");
+      top.append(
+        element("strong", "", formatDateTime(meeting.scheduled_at)),
+        element("span", statusClass(meeting.status), humanize(meeting.status)),
+      );
+      card.append(top);
+      appendOptionalText(card, "Agenda", meeting.agenda);
+      const contact = customer.contacts?.find((item) => item.contact_id === meeting.contact_id);
+      appendOptionalText(card, "Contact", contact?.name);
+      appendOptionalText(card, "Notes", meeting.notes);
+      appendOptionalText(card, "Summary", meeting.summary);
+      const prepareButton = makeActionButton(
+        meetingBriefLoadingId === meeting.meeting_id ? "Preparing…" : "Prepare Me",
+        "small-action-button",
+        () => prepareMeeting(meeting.meeting_id),
+      );
+      prepareButton.disabled = meetingBriefLoadingId === meeting.meeting_id;
+      card.append(prepareButton);
+      list.append(card);
+    }
+    meetingSection.append(list);
+  }
+
+  const calls = Array.isArray(customer.calls) ? customer.calls : [];
+  const callSection = appendSection(parent, "Calls", calls.length);
+  callSection.querySelector(".detail-section-heading").append(
+    makeActionButton("Log call", "small-action-button", () => openActivityDialog("call")),
+  );
+  if (calls.length === 0) {
+    callSection.append(element("p", "section-empty", "No calls recorded."));
+  } else {
+    const list = element("div", "activity-record-list");
+    for (const call of calls) {
+      const card = element("article", "activity-record-card");
+      const top = element("div", "activity-record-top");
+      top.append(
+        element("strong", "", displayValue(call.call_type, "Sales call")),
+        element("span", statusClass(call.status), humanize(call.status)),
+      );
+      card.append(top);
+      appendOptionalText(card, "Time", formatDateTime(call.actual_time || call.scheduled_at));
+      appendOptionalText(card, "Outcome", call.outcome);
+      appendOptionalText(card, "Notes", call.notes);
+      if (call.next_followup_date) {
+        appendOptionalText(card, "Next follow-up", formatDateTime(call.next_followup_date));
+      }
+      list.append(card);
+    }
+    callSection.append(list);
+  }
+
+  const followups = Array.isArray(customer.followups) ? customer.followups : [];
+  const followupSection = appendSection(parent, "Follow-ups", followups.length);
+  followupSection.querySelector(".detail-section-heading").append(
+    makeActionButton("Add follow-up", "small-action-button", () => openActivityDialog("followup")),
+  );
+  if (followups.length === 0) {
+    followupSection.append(element("p", "section-empty", "No follow-ups recorded."));
+  } else {
+    const list = element("div", "activity-record-list");
+    for (const followup of followups) {
+      const card = element("article", "activity-record-card");
+      const top = element("div", "activity-record-top");
+      top.append(
+        element("strong", "", displayValue(followup.description, humanize(followup.type))),
+        element("span", statusClass(followup.status), humanize(followup.status)),
+      );
+      card.append(top);
+      appendOptionalText(card, "Type", humanize(followup.type));
+      appendOptionalText(card, "Due", formatDateTime(followup.due_date));
+      appendOptionalText(card, "Related enquiry", labelForId(customer.sales_enquiries, "enquiry_id", followup.enquiry_id, "product"));
+      appendOptionalText(card, "Related meeting", labelForId(meetings, "meeting_id", followup.meeting_id, "agenda"));
+      appendOptionalText(card, "Related call", labelForId(calls, "call_id", followup.call_id, "call_type"));
+      if (followup.status !== "completed") {
+        const completeButton = makeActionButton(
+          "Mark completed",
+          "text-action-button",
+          () => completeFollowup(followup.followup_id),
+        );
+        completeButton.dataset.followupId = String(followup.followup_id);
+        card.append(completeButton);
+      }
+      list.append(card);
+    }
+    followupSection.append(list);
+  }
+
+  const timelineSection = appendSection(parent, "Activity timeline");
+  appendActivityToolbar(timelineSection, filteredActivity.length);
+  renderActivityTimeline(timelineSection);
+}
+
+function appendOptionalText(parent, label, value) {
+  if (!value) return;
+  const row = element("p", "record-detail");
+  row.append(element("span", "record-label", `${label}: `), element("span", "", value));
+  parent.append(row);
+}
+
+function labelForId(records, key, id, labelKey) {
+  if (id === null || id === undefined) return null;
+  const record = records?.find((item) => item[key] === id);
+  return record ? record[labelKey] || `${humanize(labelKey)} #${id}` : `#${id}`;
+}
+
+async function refreshSelectedCustomer() {
+  if (!selectedCustomerId) return;
+  const customer = await getCustomerOverview(selectedCustomerId);
+  selectedCustomer = customer;
+  const timeline = await getCustomerActivity(selectedCustomerId, {
+    type: activityFilter,
+    start_date: activityStartDate,
+    end_date: activityEndDate,
+  });
+  filteredActivity = timeline.items ?? [];
+  renderCustomer(customer);
+}
+
+function renderCustomer(customer) {
+  selectedCustomer = customer;
+  detailPanel.replaceChildren();
+  const content = element("div", "detail-content");
+  const hero = element("div", "detail-hero");
+  const headingGroup = element("div", "detail-heading-group");
+  headingGroup.append(element("span", "detail-avatar", initials(customer.customer_name)));
+  const heading = element("div", "detail-title");
+  heading.append(
+    element("p", "eyebrow", "CUSTOMER PROFILE"),
+    element("h2", "", displayValue(customer.customer_name)),
+    element("p", "", displayValue(customer.company?.company_name)),
+  );
+  headingGroup.append(heading);
+  hero.append(headingGroup, element("span", statusClass(customer.status), humanize(customer.status)));
+  content.append(hero);
+
+  const profile = appendSection(content, "Customer profile");
+  appendInfoGrid(profile, [
+    ["Status", humanize(customer.status)],
+    ["Sales stage", humanize(customer.sales_stage)],
+    ["Customer ID", customer.customer_id],
+    ["Created", formatDate(customer.created_at)],
+    ["Last updated", formatDate(customer.updated_at)],
+  ]);
+
+  const company = customer.company ?? {};
+  const companySection = appendSection(content, "Company information");
+  const companyCard = element("div", "company-card");
+  appendInfoGrid(companyCard, [
+    ["Company name", company.company_name],
+    ["Industry", company.industry],
+    ["Website", company.website],
+    ["Address", company.address],
+    ["City", company.city],
+    ["Country", company.country],
+    ["Company size", company.company_size],
+    ["Description", company.description],
+  ]);
+  companySection.append(companyCard);
+
+  const contacts = Array.isArray(customer.contacts) ? customer.contacts : [];
+  const contactSection = appendSection(content, "Contacts", contacts.length);
+  if (contacts.length === 0) {
+    contactSection.append(element("p", "section-empty", "No contacts recorded."));
+  } else {
+    const list = element("div", "contact-list");
+    for (const contact of contacts) {
+      const card = element("article", "contact-card");
+      const top = element("div", "contact-card-top");
+      const identity = element("div");
+      identity.append(
+        element("span", "contact-name", displayValue(contact.name)),
+        element("span", "contact-title", displayValue(contact.job_title)),
+      );
+      top.append(identity);
+      if (contact.is_primary) top.append(element("span", "primary-badge", "Primary contact"));
+      card.append(top);
+      const meta = element("div", "contact-meta");
+      if (contact.email) {
+        const email = element("a", "", contact.email);
+        email.href = `mailto:${contact.email}`;
+        meta.append(email);
+      }
+      if (contact.phone) {
+        const phone = element("a", "", contact.phone);
+        phone.href = `tel:${contact.phone}`;
+        meta.append(phone);
+      }
+      if (!contact.email && !contact.phone) meta.append(element("span", "", "No contact details"));
+      card.append(meta);
+      list.append(card);
+    }
+    contactSection.append(list);
+  }
+
+  const enquiries = Array.isArray(customer.sales_enquiries) ? customer.sales_enquiries : [];
+  const enquirySection = appendSection(content, "Sales enquiries", enquiries.length);
+  if (enquiries.length === 0) {
+    enquirySection.append(element("p", "section-empty", "No sales enquiries recorded."));
+  } else {
+    const list = element("div", "enquiry-list");
+    for (const enquiry of enquiries) {
+      const card = element("article", "enquiry-card");
+      const top = element("div", "enquiry-card-top");
+      const identity = element("div");
+      identity.append(
+        element("span", "enquiry-product", displayValue(enquiry.product, "Sales enquiry")),
+        element("span", "enquiry-date", `Created ${formatDate(enquiry.created_at)}`),
+      );
+      top.append(identity, element("span", statusClass(enquiry.status), humanize(enquiry.status)));
+      card.append(
+        top,
+        element("p", "enquiry-description", displayValue(enquiry.enquiry_text)),
+      );
+      const meta = element("div", "enquiry-meta");
+      meta.append(
+        element("span", "meta-pill", `${humanize(enquiry.priority)} priority`),
+        element("span", "meta-pill", `Estimated value: ${displayValue(enquiry.estimated_value, "Not set")}`),
+      );
+      card.append(meta);
+      list.append(card);
+    }
+    enquirySection.append(list);
+  }
+  appendAiIntelligence(content, customer);
+  appendActivities(content, customer);
+  detailPanel.append(content);
+}
+
+async function selectCustomer(customerId) {
+  if (!requireAuth()) return;
+  resetCustomerAiState({ cancelPending: true });
+  selectedCustomerId = customerId;
+  selectedCustomer = null;
+  resultList.querySelectorAll(".customer-result").forEach((button) => {
+    button.setAttribute("aria-current", String(button.dataset.customerId) === String(customerId));
+  });
+  setDetailMessage("Loading customer...", { loading: true });
+  try {
+    selectedCustomerId = customerId;
+    await refreshSelectedCustomer();
+  } catch {
+    setDetailMessage("Unable to load customer data.", { error: true });
+  }
+}
+
+function addFormField({
+  name,
+  label,
+  type = "text",
+  required = false,
+  options = [],
+  min,
+  defaultValue,
+}) {
+  const wrapper = element("label", "activity-field");
+  wrapper.append(element("span", "", label));
+  let control;
+  if (type === "textarea") {
+    control = element("textarea");
+    control.rows = 3;
+  } else if (type === "select") {
+    control = element("select");
+    const blank = element("option", "", "None");
+    blank.value = "";
+    control.append(blank);
+    for (const optionData of options) {
+      const option = element("option", "", optionData.label);
+      option.value = String(optionData.value);
+      control.append(option);
+    }
+  } else {
+    control = element("input");
+    control.type = type;
+  }
+  control.name = name;
+  if (required) control.required = true;
+  if (min !== undefined) control.min = String(min);
+  if (type === "datetime-local") control.step = "60";
+  if (defaultValue !== undefined) control.value = defaultValue;
+  wrapper.append(control);
+  activityFields.append(wrapper);
+}
+
+function relationshipOptions(records, idKey, nameSelector) {
+  return (records ?? []).map((record) => ({
+    value: record[idKey],
+    label: nameSelector(record) || `Record #${record[idKey]}`,
+  }));
+}
+
+function configureActivityForm(kind) {
+  activityFields.replaceChildren();
+  const contacts = relationshipOptions(
+    selectedCustomer?.contacts,
+    "contact_id",
+    (contact) => contact.name,
+  );
+  const enquiries = relationshipOptions(
+    selectedCustomer?.sales_enquiries,
+    "enquiry_id",
+    (enquiry) => enquiry.product || enquiry.enquiry_text,
+  );
+  const meetings = relationshipOptions(
+    selectedCustomer?.meetings,
+    "meeting_id",
+    (meeting) => meeting.agenda || formatDateTime(meeting.scheduled_at),
+  );
+  const calls = relationshipOptions(
+    selectedCustomer?.calls,
+    "call_id",
+    (call) => call.call_type || formatDateTime(call.actual_time || call.scheduled_at),
+  );
+
+  if (kind === "meeting") {
+    activityDialogTitle.textContent = "Schedule meeting";
+    addFormField({ name: "scheduled_at", label: "Date and time", type: "datetime-local", required: true });
+    addFormField({ name: "duration", label: "Duration (minutes)", type: "number", min: 1 });
+    addFormField({
+      name: "contact_id",
+      label: "Contact",
+      type: "select",
+      options: contacts,
+    });
+    addFormField({
+      name: "enquiry_id",
+      label: "Related enquiry",
+      type: "select",
+      options: enquiries,
+    });
+    addFormField({
+      name: "status",
+      label: "Status",
+      type: "select",
+      options: [
+        { value: "scheduled", label: "Scheduled" },
+        { value: "completed", label: "Completed" },
+        { value: "cancelled", label: "Cancelled" },
+        { value: "no_show", label: "No show" },
+      ],
+      defaultValue: "scheduled",
+    });
+    addFormField({ name: "agenda", label: "Agenda", type: "textarea" });
+    addFormField({ name: "notes", label: "Notes", type: "textarea" });
+  } else if (kind === "call") {
+    activityDialogTitle.textContent = "Log call";
+    addFormField({ name: "call_type", label: "Call type" });
+    addFormField({ name: "scheduled_at", label: "Scheduled time", type: "datetime-local" });
+    addFormField({ name: "actual_time", label: "Actual time", type: "datetime-local" });
+    addFormField({
+      name: "contact_id",
+      label: "Contact",
+      type: "select",
+      options: contacts,
+    });
+    addFormField({
+      name: "enquiry_id",
+      label: "Related enquiry",
+      type: "select",
+      options: enquiries,
+    });
+    addFormField({
+      name: "status",
+      label: "Status",
+      type: "select",
+      options: [
+        { value: "scheduled", label: "Scheduled" },
+        { value: "attempted", label: "Attempted" },
+        { value: "completed", label: "Completed" },
+        { value: "failed", label: "Failed" },
+        { value: "cancelled", label: "Cancelled" },
+      ],
+      defaultValue: "scheduled",
+    });
+    addFormField({ name: "outcome", label: "Outcome" });
+    addFormField({ name: "notes", label: "Notes", type: "textarea" });
+    addFormField({ name: "next_followup_date", label: "Next follow-up", type: "datetime-local" });
+  } else {
+    activityDialogTitle.textContent = "Add follow-up";
+    addFormField({
+      name: "type",
+      label: "Type",
+      type: "select",
+      required: true,
+      options: [
+        { value: "call", label: "Call" },
+        { value: "email", label: "Email" },
+        { value: "meeting", label: "Meeting" },
+        { value: "task", label: "Task" },
+        { value: "other", label: "Other" },
+      ],
+    });
+    addFormField({ name: "due_date", label: "Due date and time", type: "datetime-local", required: true });
+    addFormField({
+      name: "status",
+      label: "Status",
+      type: "select",
+      options: [
+        { value: "pending", label: "Pending" },
+        { value: "in_progress", label: "In progress" },
+        { value: "completed", label: "Completed" },
+        { value: "cancelled", label: "Cancelled" },
+        { value: "overdue", label: "Overdue" },
+      ],
+      defaultValue: "pending",
+    });
+    addFormField({ name: "assigned_to", label: "Assigned to" });
+    addFormField({
+      name: "enquiry_id",
+      label: "Related enquiry",
+      type: "select",
+      options: enquiries,
+    });
+    addFormField({
+      name: "meeting_id",
+      label: "Related meeting",
+      type: "select",
+      options: meetings,
+    });
+    addFormField({
+      name: "call_id",
+      label: "Related call",
+      type: "select",
+      options: calls,
+    });
+    addFormField({ name: "description", label: "Description", type: "textarea" });
+  }
+}
+
+function openActivityDialog(kind) {
+  if (!selectedCustomerId || !selectedCustomer) return;
+  selectedActivityKind = kind;
+  activityForm.reset();
+  activityFormError.hidden = true;
+  activityFormError.textContent = "";
+  configureActivityForm(kind);
+  activityDialog.showModal();
+  activityFields.querySelector("input, select, textarea")?.focus();
+}
+
+function optionalFormValue(formData, field) {
+  const value = String(formData.get(field) ?? "").trim();
+  return value || null;
+}
+
+function activityFormPayload(kind, formData) {
+  const payload = { customer_id: Number(selectedCustomerId) };
+  const stringFields = {
+    meeting: ["status", "agenda", "notes"],
+    call: ["call_type", "status", "outcome", "notes"],
+    followup: ["type", "status", "assigned_to", "description"],
+  }[kind];
+  const relationFields = {
+    meeting: ["contact_id", "enquiry_id"],
+    call: ["contact_id", "enquiry_id"],
+    followup: ["enquiry_id", "meeting_id", "call_id"],
+  }[kind];
+  const dateFields = {
+    meeting: ["scheduled_at"],
+    call: ["scheduled_at", "actual_time", "next_followup_date"],
+    followup: ["due_date"],
+  }[kind];
+
+  for (const field of stringFields) {
+    payload[field] = optionalFormValue(formData, field);
+  }
+  for (const field of relationFields) {
+    const value = optionalFormValue(formData, field);
+    payload[field] = value ? Number(value) : null;
+  }
+  for (const field of dateFields) {
+    const value = optionalFormValue(formData, field);
+    payload[field] = value ? new Date(value).toISOString() : null;
+  }
+  if (kind === "meeting") {
+    const duration = optionalFormValue(formData, "duration");
+    payload.duration = duration ? Number(duration) : null;
+  }
+  return payload;
+}
+
+activityForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  activityFormError.hidden = true;
+  if (!activityForm.reportValidity() || isSavingActivity) return;
+  isSavingActivity = true;
+  saveActivityButton.disabled = true;
+  saveActivityButton.textContent = "Saving…";
+  try {
+    try {
+      const payload = activityFormPayload(selectedActivityKind, new FormData(activityForm));
+      if (selectedActivityKind === "meeting") await createMeeting(payload);
+      else if (selectedActivityKind === "call") await createCall(payload);
+      else await createFollowup(payload);
+    } catch (error) {
+      activityFormError.textContent =
+        error.status >= 500
+          ? "Unable to save activity. Please try again."
+          : error.message || "Unable to save activity.";
+      activityFormError.hidden = false;
+      return;
+    }
+    activityDialog.close();
+    try {
+      await refreshSelectedCustomer();
+    } catch {
+      setDetailMessage("Unable to load customer data.", { error: true });
+    }
+  } finally {
+    isSavingActivity = false;
+    saveActivityButton.disabled = false;
+    saveActivityButton.textContent = "Save activity";
+  }
+});
+
+async function completeFollowup(followupId) {
+  try {
+    await updateFollowup(followupId, {
+      status: "completed",
+      completed_at: new Date().toISOString(),
+    });
+  } catch (error) {
+    const card = [...detailPanel.querySelectorAll(".activity-record-card")].find(
+      (item) => item.querySelector(".text-action-button")?.dataset.followupId === String(followupId),
+    );
+    card?.append(element("p", "detail-api-error", error.message || "Unable to update follow-up."));
+    return;
+  }
+  try {
+    await refreshSelectedCustomer();
+  } catch {
+    setDetailMessage("Unable to load customer data.", { error: true });
+  }
+}
+
+searchForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!requireAuth()) return;
+  resetCustomerAiState({ cancelPending: true });
+  currentSearch = searchInput.value.trim();
+  currentPage = 1;
+  selectedCustomerId = null;
+  selectedCustomer = null;
+  setDetailMessage("Select a customer from the search results to view their information.");
+  void loadCustomers(1);
+});
+
+resultList.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-customer-id]");
+  if (button) selectCustomer(button.dataset.customerId);
+});
+
+previousPage.addEventListener("click", () => {
+  if (currentPage > 1) loadCustomers(currentPage - 1);
+});
+nextPage.addEventListener("click", () => {
+  if (currentPage < totalPages) loadCustomers(currentPage + 1);
+});
+document.querySelector("#close-activity-dialog").addEventListener("click", () => activityDialog.close());
+document.querySelector("#cancel-activity").addEventListener("click", () => activityDialog.close());
+activityDialog.addEventListener("click", (event) => {
+  if (event.target === activityDialog && !isSavingActivity) activityDialog.close();
+});
+document.querySelector("#close-meeting-brief").addEventListener("click", () => meetingBriefDialog.close());
+document.querySelector("#close-meeting-brief-action").addEventListener("click", () => meetingBriefDialog.close());
+meetingBriefDialog.addEventListener("click", (event) => {
+  if (event.target === meetingBriefDialog) meetingBriefDialog.close();
+});
+
+mountAuthControls();
+if (requireAuth()) {
+  const initialParams = new URLSearchParams(window.location.search);
+  const linkedCustomerId = initialParams.get("customer_id");
+  if (linkedCustomerId && /^\d+$/.test(linkedCustomerId)) {
+    setDetailMessage("Loading customer...", { loading: true });
+    loadCustomers(1).then(() => {
+      selectCustomer(linkedCustomerId);
+    });
+  } else {
+    setDetailMessage("Search for a customer to view their information.");
+  }
+}

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Structured sales analytics from CRM records.">
+    <title>Sales Analytics | SalesDesk</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/analytics.css">
+    <script type="module" src="/static/js/analytics.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Sales CRM home"><span class="brand-mark" aria-hidden="true">S</span><span>Sales<span class="brand-light">Desk</span></span></a>
+      <nav class="top-nav" aria-label="Main navigation">
+        <a class="nav-link" href="/">Overview</a>
+        <a class="nav-link" href="/customer-registration">Register customer</a>
+        <a class="nav-link" href="/customer">Customer intelligence</a>
+        <a class="nav-link active" href="/analytics">Analytics</a>
+      </nav>
+      <a class="header-back" href="/">← <span>Home</span></a>
+    </header>
+    <main class="page-shell analytics-shell">
+      <div class="page-intro">
+        <p class="eyebrow">SALES WORKSPACE <span class="eyebrow-divider">/</span> PERFORMANCE</p>
+        <h1>Sales analytics</h1>
+        <p>Structured metrics calculated from customer, enquiry, activity, and follow-up records.</p>
+      </div>
+      <form id="analytics-filters" class="analytics-filters">
+        <label>Start date <input type="date" name="start_date"></label>
+        <label>End date <input type="date" name="end_date"></label>
+        <label>Time grouping
+          <select name="grain">
+            <option value="monthly" selected>Monthly</option>
+            <option value="weekly">Weekly</option>
+            <option value="daily">Daily</option>
+          </select>
+        </label>
+        <button class="button button-primary" type="submit">Apply filters</button>
+      </form>
+      <p id="analytics-status" class="analytics-status" role="status" aria-live="polite">Loading analytics...</p>
+      <section aria-label="Key performance indicators">
+        <div id="analytics-kpis" class="analytics-kpis" hidden>
+          <article class="analytics-kpi"><span>Total customers</span><strong data-metric="total_customers">0</strong></article>
+          <article class="analytics-kpi"><span>Active customers</span><strong data-metric="active_customers">0</strong></article>
+          <article class="analytics-kpi"><span>Open enquiries</span><strong data-metric="open_enquiries">0</strong></article>
+          <article class="analytics-kpi"><span>Meetings this month</span><strong data-metric="meetings_this_month">0</strong></article>
+          <article class="analytics-kpi"><span>Calls this month</span><strong data-metric="calls_this_month">0</strong></article>
+          <article class="analytics-kpi"><span>Pending follow-ups</span><strong data-metric="pending_followups">0</strong></article>
+          <article class="analytics-kpi"><span>Overdue follow-ups</span><strong data-metric="overdue_followups">0</strong></article>
+        </div>
+      </section>
+      <section class="analytics-grid" aria-label="CRM metric charts">
+        <article class="analytics-card"><h2>Customers by sales stage</h2><div class="analytics-chart" id="chart-customer-stages"></div></article>
+        <article class="analytics-card"><h2>Enquiries by status</h2><div class="analytics-chart" id="chart-enquiry-status"></div></article>
+        <article class="analytics-card"><h2>Enquiries by priority</h2><div class="analytics-chart" id="chart-enquiry-priority"></div></article>
+        <article class="analytics-card"><h2>Pipeline value by sales stage</h2><div class="analytics-chart" id="chart-pipeline"></div></article>
+        <article class="analytics-card analytics-card-wide"><h2>Activity volume over time</h2><div class="chart-legend"><span>Meetings</span><span>Calls</span><span>Follow-ups</span></div><div class="analytics-chart" id="chart-activity"></div></article>
+        <article class="analytics-card"><h2>Follow-up status</h2><div class="analytics-chart" id="chart-followups"></div><p id="followup-due-summary" class="chart-footnote"></p></article>
+      </section>
+      <section class="analytics-summary"><span>Total estimated enquiry value</span><strong id="total-enquiry-value">0</strong></section>
+      <p id="analytics-error" class="analytics-error" role="alert" hidden></p>
+    </main>
+  </body>
+</html>

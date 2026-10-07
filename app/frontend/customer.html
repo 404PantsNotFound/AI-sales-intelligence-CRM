@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Search customers and review their company, contacts, sales enquiries, and activity.">
+    <title>Customer Intelligence | SalesDesk</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/customer.css">
+    <script type="module" src="/static/js/customer.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Sales CRM home"><span class="brand-mark" aria-hidden="true">S</span><span>Sales<span class="brand-light">Desk</span></span></a>
+      <nav class="top-nav" aria-label="Main navigation">
+        <a class="nav-link" href="/">Overview</a>
+        <a class="nav-link" href="/customer-registration">Register customer</a>
+        <a class="nav-link active" href="/customer">Customer intelligence</a>
+        <a class="nav-link" href="/analytics">Analytics</a>
+      </nav>
+      <a class="header-back" href="/">← <span>Home</span></a>
+    </header>
+
+    <main class="page-shell intelligence-shell">
+      <div class="page-intro">
+        <p class="eyebrow">CUSTOMER WORKSPACE <span class="eyebrow-divider">/</span> RELATIONSHIP OVERVIEW</p>
+        <h1>Customer intelligence</h1>
+        <p>Search your customer records and explore their company, contacts, enquiries, and activity.</p>
+      </div>
+
+      <section class="search-panel" aria-label="Search customers">
+        <form id="customer-search-form" class="search-form">
+          <label class="search-input-wrap">
+            <span class="search-icon" aria-hidden="true">⌕</span>
+            <span class="visually-hidden">Search customer or company name</span>
+            <input id="customer-search" name="search" type="search" autocomplete="off" placeholder="Search by customer or company name">
+          </label>
+          <button class="button button-primary" type="submit">Search <span aria-hidden="true">→</span></button>
+        </form>
+        <div class="search-hint"><span class="status-dot" aria-hidden="true"></span> Search customer and company records</div>
+      </section>
+
+      <div class="intelligence-layout">
+        <section class="results-panel" aria-labelledby="results-heading">
+          <div class="panel-heading">
+            <div><p class="eyebrow">DIRECTORY</p><h2 id="results-heading">Customers</h2></div>
+            <span id="result-count" class="result-count"></span>
+          </div>
+          <div id="search-state" class="empty-state"><span class="empty-icon" aria-hidden="true">⌕</span><p>Search for a customer to view their information.</p></div>
+          <div id="customer-results" class="customer-results" aria-live="polite"></div>
+          <div id="pagination" class="pagination" hidden>
+            <button id="previous-page" class="page-button" type="button" aria-label="Previous page">←</button>
+            <span id="page-indicator"></span>
+            <button id="next-page" class="page-button" type="button" aria-label="Next page">→</button>
+          </div>
+        </section>
+
+        <section id="customer-detail" class="detail-panel" aria-live="polite">
+          <div class="empty-state detail-empty"><span class="empty-icon" aria-hidden="true">◎</span><h2>No customer selected</h2><p>Search for a customer to view their information.</p></div>
+        </section>
+      </div>
+    </main>
+
+    <dialog id="activity-dialog" class="activity-dialog">
+      <form id="activity-form" class="activity-form">
+        <div class="dialog-heading">
+          <div><p class="eyebrow">CUSTOMER ACTIVITY</p><h2 id="activity-dialog-title">Add activity</h2></div>
+          <button id="close-activity-dialog" class="dialog-close" type="button" aria-label="Close">×</button>
+        </div>
+        <div id="activity-fields" class="activity-fields"></div>
+        <p id="activity-form-error" class="form-alert" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button id="cancel-activity" class="button button-secondary" type="button">Cancel</button>
+          <button id="save-activity" class="button button-primary" type="submit">Save activity</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="meeting-brief-dialog" class="activity-dialog meeting-brief-dialog">
+      <div class="activity-form">
+        <div class="dialog-heading">
+          <div><p class="eyebrow">MEETING PREPARATION</p><h2 id="meeting-brief-title">Meeting brief</h2></div>
+          <button id="close-meeting-brief" class="dialog-close" type="button" aria-label="Close">×</button>
+        </div>
+        <div id="meeting-brief-content"></div>
+        <div class="dialog-actions">
+          <button id="close-meeting-brief-action" class="button button-secondary" type="button">Close</button>
+        </div>
+      </div>
+    </dialog>
+  </body>
+</html>

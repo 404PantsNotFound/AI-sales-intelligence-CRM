@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Sign in to the SalesDesk CRM workspace.">
+    <title>Sign In | SalesDesk</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/registration.css">
+    <script type="module" src="/static/js/login.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Sales CRM home">
+        <span class="brand-mark" aria-hidden="true">S</span>
+        <span>Sales<span class="brand-light">Desk</span></span>
+      </a>
+      <nav class="top-nav" aria-label="Main navigation">
+        <a class="nav-link" href="/">Overview</a>
+        <a class="nav-link" href="/customer-registration">Register customer</a>
+        <a class="nav-link" href="/customer">Customer intelligence</a>
+        <a class="nav-link" href="/analytics">Analytics</a>
+      </nav>
+      <a class="header-back" href="/">← <span>Home</span></a>
+    </header>
+
+    <main class="page-shell auth-shell">
+      <div class="page-intro">
+        <p class="eyebrow">WORKSPACE ACCESS <span class="eyebrow-divider">/</span> AUTHENTICATION</p>
+        <h1 id="auth-heading">Sign in to SalesDesk</h1>
+        <p id="auth-subheading">Access customer intelligence, analytics, and AI-assisted CRM workflows.</p>
+      </div>
+
+      <section class="form-section auth-card" aria-labelledby="auth-heading">
+        <div class="auth-mode-tabs" role="tablist" aria-label="Authentication mode">
+          <button id="tab-login" class="auth-tab active" type="button" role="tab" aria-selected="true">Sign in</button>
+          <button id="tab-register" class="auth-tab" type="button" role="tab" aria-selected="false">Create account</button>
+        </div>
+
+        <form id="login-form" class="auth-form" novalidate>
+          <div id="register-name-group" class="form-grid" hidden>
+            <label class="field field-wide">
+              <span>Full name <span class="required-mark">*</span></span>
+              <input id="auth-full-name" name="full_name" maxlength="255" autocomplete="name" placeholder="e.g. Jordan Taylor">
+            </label>
+          </div>
+          <div class="form-grid">
+            <label class="field field-wide">
+              <span>Work email <span class="required-mark">*</span></span>
+              <input id="auth-email" name="email" type="email" required maxlength="320" autocomplete="email" placeholder="name@company.com">
+            </label>
+            <label class="field field-wide">
+              <span>Password <span class="required-mark">*</span></span>
+              <input id="auth-password" name="password" type="password" required minlength="8" maxlength="128" autocomplete="current-password" placeholder="Enter your password">
+            </label>
+          </div>
+          <p id="auth-error" class="form-alert" role="alert" hidden></p>
+          <p id="auth-notice" class="auth-notice" role="status" hidden></p>
+          <div class="form-actions">
+            <p class="auth-session-note">Session token stored in browser session only</p>
+            <button id="auth-submit" class="button button-primary" type="submit">
+              <span data-auth-label>Sign in</span>
+              <span aria-hidden="true">→</span>
+            </button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>
