@@ -16,6 +16,7 @@ from app.api.routes import (
     enquiries,
     followups,
     meetings,
+    imports,
 )
 from app.core.config import Settings, settings
 from app.core.exceptions import APIError, api_error_handler
@@ -101,6 +102,7 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         followups.customer_router,
         analytics.router,
         agent.router,
+        imports.router,
     ):
         api_router.include_router(router, dependencies=protected_dependencies)
 

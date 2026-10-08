@@ -17,7 +17,13 @@
 .field textarea { min-height: 72px; resize: vertical; line-height: 1.55; }
 .field input::placeholder, .field textarea::placeholder { color: #a9b3bd; }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: #7aa6dd; box-shadow: 0 0 0 3px rgb(35 103 209 / 9%); }
-.field input[aria-invalid="true"], .field textarea[aria-invalid="true"] { border-color: #dc7169; }
+
+/*MANUAL EDIT*/
+.field-error {display: none; margin-top: 6px; font-size: 0.85rem; color: #dc7169;}
+.field input[aria-invalid="true"] { border-color: #dc7169; box-shadow: 0 0 8px rgba(220, 113, 105, 0.55);}
+.field input[aria-invalid="true"] + .field-error { display: block; }
+
+
 .input-prefix { position: relative; }
 .input-prefix > span { position: absolute; top: 50%; left: 12px; color: #8c9cac; font-size: 12px; transform: translateY(-50%); }
 .input-prefix input { padding-left: 28px; }

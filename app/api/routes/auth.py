@@ -14,7 +14,7 @@ from app.services.auth_service import authenticate_user, register_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-
+# MANUAL EDIT
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def register_user_route(
     payload: UserRegisterRequest,

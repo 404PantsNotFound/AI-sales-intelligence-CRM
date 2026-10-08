@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from decimal import Decimal
+
 from app.schemas.follow_up import FollowUpStatus
 from app.schemas.meeting import MeetingStatus
 from app.schemas.validators import MAX_TEXT_LENGTH, normalize_utc_datetime
@@ -77,3 +79,36 @@ class CompleteFollowupProposal(ActionInput):
     customer_id: int = Field(ge=1)
     followup_id: int = Field(ge=1)
 
+class ApplyEnrichmentProposal(BaseModel):
+    model_config = ConfigDict(
+        str_strip_whitespace=True,
+        extra="forbid",
+    )
+
+    customer_id: int = Field(ge=1)
+    enquiry_id: int | None = Field(default=None, ge=1)
+
+    sales_stage: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=50,
+    )
+    customer_status: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=50,
+    )
+    enquiry_priority: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=50,
+    )
+    enquiry_status: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=50,
+    )
+    estimated_value: Decimal | None = Field(
+        default=None,
+        ge=0,
+    )

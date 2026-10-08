@@ -90,7 +90,10 @@ def agent_sessions(agent_engine: Engine) -> sessionmaker[Session]:
 @pytest.fixture
 def agent_client(
     agent_sessions: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> Generator[TestClient, None, None]:
+    monkeypatch.setattr("app.agent.agent.SessionLocal", agent_sessions)
+
     def override_get_db() -> Generator[Session, None, None]:
         with agent_sessions() as db:
             yield db

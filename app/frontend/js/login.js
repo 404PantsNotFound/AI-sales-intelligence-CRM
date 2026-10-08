@@ -6,6 +6,13 @@ const tabRegister = document.querySelector("#tab-register");
 const nameGroup = document.querySelector("#register-name-group");
 const fullNameInput = document.querySelector("#auth-full-name");
 const emailInput = document.querySelector("#auth-email");
+// MANUAL EDIT
+const emailError = emailInput.parentElement.querySelector(".field-error");
+
+function setEmailError(message) {
+  emailInput.setAttribute("aria-invalid", "true");
+  emailError.textContent = message;
+}
 const passwordInput = document.querySelector("#auth-password");
 const errorBox = document.querySelector("#auth-error");
 const noticeBox = document.querySelector("#auth-notice");
@@ -52,26 +59,37 @@ function setMode(nextMode) {
 
 tabLogin.addEventListener("click", () => setMode("login"));
 tabRegister.addEventListener("click", () => setMode("register"));
-
+// MANUAL EDIT
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+
   setMessages();
 
-  if (!form.reportValidity()) return;
+  emailInput.removeAttribute("aria-invalid");
+  emailError.textContent = "";
 
   const email = emailInput.value.trim();
   const password = passwordInput.value;
   const fullName = fullNameInput.value.trim();
 
-  if (!email || !password.trim()) {
-    setMessages({ error: "Please enter both your email and password." });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    setEmailError("Email is not valid.");
+    emailInput.focus();
     return;
   }
+
+  if (!password.trim()) {
+    setMessages({ error: "Please enter your password." });
+    return;
+  }
+
   if (mode === "register" && !fullName) {
     setMessages({ error: "Please enter your full name." });
     fullNameInput.focus();
     return;
   }
+
+
 
   submitButton.disabled = true;
   submitButton.setAttribute("aria-busy", "true");

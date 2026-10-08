@@ -5,6 +5,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
+from app.services.email_verification_service import verify_email
 from app.core.exceptions import APIError
 from app.core.logging_utils import log_database_exception
 from app.database.connection import atomic_transaction, rollback_failed_transaction
@@ -27,11 +28,19 @@ def _is_duplicate_customer_integrity_error(exc: IntegrityError) -> bool:
         or ("customers.company_id" in detail and "customers.customer_name" in detail)
     )
 
-
+# MANUAL EDIT #2 FOR EMAIL VALIDATION: Added email validation for primary contact in create_customer function////FEATURE 1
 def create_customer(
     db: Session,
     registration: CustomerRegistrationCreate,
 ) -> RegistrationRecords:
+    if registration.primary_contact.email is not None:
+        if not verify_email(str(registration.primary_contact.email)):
+            raise APIError(
+                "Email is not valid.",
+                status_code=422,
+                code="invalid_email",
+            )
+
     try:
         with atomic_transaction(db):
             normalized_company_name = _normalized_name(registration.company.company_name)
@@ -140,25 +149,34 @@ def get_customer(db: Session, customer_id: int) -> Customer:
     try:
         customer = db.scalar(
             select(Customer)
-            .options(
-                joinedload(Customer.company),
-                selectinload(Customer.contacts),
-                selectinload(Customer.sales_enquiries),
-            )
             .where(Customer.customer_id == customer_id)
         )
-    except SQLAlchemyError as exc:
-        rollback_failed_transaction(db)
-        log_database_exception(logger, "get_customer", exc)
-        raise APIError(
-            "The database operation could not be completed.",
-            status_code=500,
-            code="database_error",
-        ) from exc
 
-    if customer is None:
-        raise APIError("Customer not found.", status_code=404, code="customer_not_found")
-    return customer
+        if customer is None:
+            raise APIError(
+                "Customer not found.",
+                status_code=404,
+                code="customer_not_found",
+            )
+
+        # Force each relationship individually so we can identify
+        # which ORM load is failing.
+        _ = customer.company
+        _ = customer.contacts
+        _ = customer.sales_enquiries
+
+        return customer
+
+    except APIError:
+        raise
+
+    except Exception as exc:
+        logger.exception(
+            "Customer ORM load failed [customer_id=%s error_type=%s]",
+            customer_id,
+            type(exc).__name__,
+        )
+        raise
 
 
 def update_customer(

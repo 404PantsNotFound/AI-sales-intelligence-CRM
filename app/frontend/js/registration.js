@@ -8,6 +8,14 @@ const successCard = document.querySelector("#registration-success");
 const successSummary = document.querySelector("#success-summary");
 const successDetails = document.querySelector("#success-details");
 const customerLink = document.querySelector("#open-customer-link");
+const emailInput = form.elements.namedItem("email");
+const emailError = emailInput.parentElement.querySelector(".field-error");
+
+/*MANUAL EDIT*/
+function setEmailError(message) {
+  emailInput.setAttribute("aria-invalid", "true");
+  emailError.textContent = message;
+}
 
 function setError(message) {
   errorBox.textContent = message;
@@ -74,8 +82,20 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!requireAuth()) return;
   setError("");
+  emailInput.removeAttribute("aria-invalid");
+  emailError.textContent = "";
 
-  if (!form.reportValidity()) return;
+  /*MANUAL CHANGE 3*/
+  const email = emailInput.value.trim();
+
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    console.log("INVALID EMAIL - BLOCKING SUBMISSION");
+    setEmailError("Email is not valid.");
+    emailInput.focus();
+    return;
+  }
+
+
   for (const name of ["customer_name", "company_name", "contact_name", "enquiry_text"]) {
     const input = form.elements.namedItem(name);
     if (!input.value.trim()) {
@@ -96,13 +116,28 @@ form.addEventListener("submit", async (event) => {
   submitButton.disabled = true;
   submitButton.setAttribute("aria-busy", "true");
   submitButton.querySelector("[data-button-label]").textContent = "Registering…";
+  emailInput.removeAttribute("aria-invalid");
+  emailError.textContent = "";
 
   try {
     const result = await createCustomer(buildRegistrationPayload(new FormData(form)));
     renderSuccess(result);
     form.reset();
     form.querySelectorAll("[aria-invalid='true']").forEach((input) => input.removeAttribute("aria-invalid"));
-  } catch (error) {
+    } catch (error) {
+    const emailValidationError = error.data?.detail?.some?.(
+      (item) =>
+        Array.isArray(item.loc) &&
+        item.loc.includes("primary_contact") &&
+        item.loc.includes("email")
+    );
+
+    if (error.code === "invalid_email" || emailValidationError) {
+      setEmailError("Email is not valid.");
+      emailInput.focus();
+      return;
+    }
+
     const message =
       error.status === 409
         ? error.message || "A customer with these details is already registered."
@@ -111,6 +146,7 @@ form.addEventListener("submit", async (event) => {
           : error.status >= 500
             ? "The server could not complete registration. Please try again."
             : error.message || "Unable to register customer. Check your connection and try again.";
+
     setError(message);
   } finally {
     submitButton.disabled = false;

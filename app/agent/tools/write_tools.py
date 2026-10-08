@@ -1,6 +1,5 @@
-from typing import Any
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from langchain_core.tools import StructuredTool
 from langgraph.types import interrupt
@@ -10,6 +9,7 @@ from app.schemas.follow_up import FollowUpStatus
 from app.schemas.meeting import MeetingStatus
 
 from .action_schemas import (
+    ApplyEnrichmentProposal,
     CompleteFollowupProposal,
     CreateFollowupProposal,
     CreateMeetingProposal,
@@ -51,15 +51,21 @@ def build_action_proposal_tools(
                 "notes": notes,
             }
         )
+
         invalid = _validate_known_references(
             context,
             customer_id=data.customer_id,
             contact_id=data.contact_id,
             enquiry_id=data.enquiry_id,
         )
+
         if invalid:
             return invalid
-        return _prepare("create_meeting", data.model_dump(mode="json"))
+
+        return _prepare(
+            "create_meeting",
+            data.model_dump(mode="json"),
+        )
 
     def create_followup(
         customer_id: int,
@@ -88,6 +94,7 @@ def build_action_proposal_tools(
                 "completed_at": completed_at,
             }
         )
+
         invalid = _validate_known_references(
             context,
             customer_id=data.customer_id,
@@ -95,9 +102,14 @@ def build_action_proposal_tools(
             meeting_id=data.meeting_id,
             call_id=data.call_id,
         )
+
         if invalid:
             return invalid
-        return _prepare("create_followup", data.model_dump(mode="json"))
+
+        return _prepare(
+            "create_followup",
+            data.model_dump(mode="json"),
+        )
 
     def record_call_result(
         customer_id: int,
@@ -126,30 +138,109 @@ def build_action_proposal_tools(
                 "next_followup_date": next_followup_date,
             }
         )
+
         invalid = _validate_known_references(
             context,
             customer_id=data.customer_id,
             contact_id=data.contact_id,
             enquiry_id=data.enquiry_id,
         )
+
         if invalid:
             return invalid
-        return _prepare("record_call_result", data.model_dump(mode="json"))
 
-    def complete_followup(customer_id: int, followup_id: int) -> str:
+        return _prepare(
+            "record_call_result",
+            data.model_dump(mode="json"),
+        )
+
+    def apply_enrichment(
+        customer_id: int,
+        enquiry_id: int | None = None,
+        sales_stage: str | None = None,
+        customer_status: str | None = None,
+        enquiry_priority: str | None = None,
+        enquiry_status: str | None = None,
+        estimated_value: float | None = None,
+    ) -> str:
+        """Propose applying AI-generated CRM enrichment. It never updates the CRM before explicit confirmation."""
+        data = ApplyEnrichmentProposal.model_validate(
+            {
+                "customer_id": customer_id,
+                "enquiry_id": enquiry_id,
+                "sales_stage": sales_stage,
+                "customer_status": customer_status,
+                "enquiry_priority": enquiry_priority,
+                "enquiry_status": enquiry_status,
+                "estimated_value": estimated_value,
+            }
+        )
+
+        invalid = _validate_known_references(
+            context,
+            customer_id=data.customer_id,
+            enquiry_id=data.enquiry_id,
+        )
+
+        if invalid:
+            return invalid
+
+        if all(
+            value is None
+            for value in (
+                data.sales_stage,
+                data.customer_status,
+                data.enquiry_priority,
+                data.enquiry_status,
+                data.estimated_value,
+            )
+        ):
+            return (
+                '{"error":{"code":"empty_enrichment",'
+                '"message":"No CRM changes were proposed."}}'
+            )
+
+        return _prepare(
+            "apply_enrichment",
+            data.model_dump(mode="json"),
+        )
+
+    def complete_followup(
+        customer_id: int,
+        followup_id: int,
+    ) -> str:
         """Propose marking a retrieved follow-up completed; explicit confirmation is still required."""
         data = CompleteFollowupProposal.model_validate(
-            {"customer_id": customer_id, "followup_id": followup_id}
+            {
+                "customer_id": customer_id,
+                "followup_id": followup_id,
+            }
         )
+
         if not context.can_access_customer(data.customer_id):
             return _scope_violation()
+
         if not context.has_customer(data.customer_id):
             return _unknown_reference("customer")
-        if not context.has_followup(data.customer_id, data.followup_id):
+
+        if not context.has_followup(
+            data.customer_id,
+            data.followup_id,
+        ):
             return _unknown_reference("follow-up")
-        return _prepare("complete_followup", data.model_dump(mode="json"))
+
+        return _prepare(
+            "complete_followup",
+            data.model_dump(mode="json"),
+        )
 
     return [
+        StructuredTool.from_function(
+            func=apply_enrichment,
+            name="apply_enrichment",
+            description=apply_enrichment.__doc__,
+            args_schema=ApplyEnrichmentProposal,
+        ),
         StructuredTool.from_function(
             func=create_meeting,
             name="create_meeting",
@@ -187,7 +278,8 @@ def _scope_violation() -> str:
 def _unknown_reference(kind: str) -> str:
     return (
         '{"error":{"code":"record_not_retrieved",'
-        f'"message":"Use CRM read tools to identify this {kind} before proposing an action."' + "}}"
+        f'"message":"Use CRM read tools to identify this {kind} before proposing an action."'
+        + "}}"
     )
 
 
@@ -202,8 +294,10 @@ def _validate_known_references(
 ) -> str | None:
     if not context.can_access_customer(customer_id):
         return _scope_violation()
+
     if not context.has_customer(customer_id):
         return _unknown_reference("customer")
+
     for record_id, has_fn, label in (
         (contact_id, context.has_contact, "contact"),
         (enquiry_id, context.has_enquiry, "enquiry"),
@@ -212,5 +306,5 @@ def _validate_known_references(
     ):
         if record_id is not None and not has_fn(customer_id, record_id):
             return _unknown_reference(label)
-    return None
 
+    return None

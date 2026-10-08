@@ -3,6 +3,10 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
+from decimal import Decimal
+
+from app.models import Call, Customer, FollowUp, Meeting, SalesEnquiry
+
 import pytest
 from fastapi.testclient import TestClient
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
@@ -12,7 +16,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.agent.tools import build_read_only_tools
 from app.core.config import settings
-from app.models import Call, FollowUp, Meeting
+from app.models import Call, Customer, FollowUp, Meeting, SalesEnquiry
 from app.schemas.agent import AgentChatRequest
 from app.services.agent_action_state import pending_actions
 
@@ -359,3 +363,257 @@ def test_chat_request_validation_and_safe_missing_key(
     assert "API key" not in response.text
     with pytest.raises(ValidationError):
         AgentChatRequest(message=" ", customer_id=agent_records["customer_id"])
+
+def test_enrichment_proposal_does_not_write_before_confirmation(
+    agent_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+    agent_records: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    customer_id = agent_records["customer_id"]
+    enquiry_id = agent_records["enquiry_id"]
+
+    with agent_sessions() as db:
+        customer = db.get(Customer, customer_id)
+        enquiry = db.get(SalesEnquiry, enquiry_id)
+
+        assert customer is not None
+        assert enquiry is not None
+
+        original_sales_stage = customer.sales_stage
+        original_priority = enquiry.priority
+        original_status = enquiry.status
+
+    _chat_model(
+        monkeypatch,
+        _tool_call(
+            "get_customer_profile",
+            {"customer_id": customer_id},
+            "read-profile",
+        ),
+        _tool_call(
+            "get_sales_enquiries",
+            {"customer_id": customer_id},
+            "read-enquiries",
+        ),
+        _tool_call(
+            "apply_enrichment",
+            {
+                "customer_id": customer_id,
+                "enquiry_id": enquiry_id,
+                "sales_stage": "qualified",
+                "enquiry_priority": "high",
+                "enquiry_status": "in_progress",
+            },
+            "apply-enrichment",
+        ),
+    )
+
+    proposal = _post_chat(
+        agent_client,
+        customer_id,
+        "Analyze the CRM activity and enrich the customer.",
+    )
+
+    assert proposal["pending_action"] is not None
+    assert proposal["pending_action"]["action"] == "apply_enrichment"
+
+    with agent_sessions() as db:
+        customer = db.get(Customer, customer_id)
+        enquiry = db.get(SalesEnquiry, enquiry_id)
+
+        assert customer is not None
+        assert enquiry is not None
+
+        assert customer.sales_stage == original_sales_stage
+        assert enquiry.priority == original_priority
+        assert enquiry.status == original_status
+
+
+def test_confirmed_enrichment_updates_customer_and_enquiry(
+    agent_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+    agent_records: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    customer_id = agent_records["customer_id"]
+    enquiry_id = agent_records["enquiry_id"]
+
+    _chat_model(
+        monkeypatch,
+        _tool_call(
+            "get_customer_profile",
+            {"customer_id": customer_id},
+            "read-profile",
+        ),
+        _tool_call(
+            "get_sales_enquiries",
+            {"customer_id": customer_id},
+            "read-enquiries",
+        ),
+        _tool_call(
+            "apply_enrichment",
+            {
+                "customer_id": customer_id,
+                "enquiry_id": enquiry_id,
+                "sales_stage": "qualified",
+                "customer_status": "active",
+                "enquiry_priority": "high",
+                "enquiry_status": "in_progress",
+                "estimated_value": 25000,
+            },
+            "apply-enrichment",
+        ),
+    )
+
+    proposal = _post_chat(
+        agent_client,
+        customer_id,
+        "Enrich this customer from the retrieved CRM information.",
+    )
+
+    pending = proposal["pending_action"]
+
+    assert pending is not None
+    assert pending["action"] == "apply_enrichment"
+
+    response = agent_client.post(
+        f"/api/agent/actions/{pending['action_id']}/confirm"
+    )
+
+    assert response.status_code == 200
+
+    result = response.json()
+
+    assert result["status"] == "completed"
+    assert result["action"] == "apply_enrichment"
+    assert result["message"] == "CRM enrichment applied successfully."
+
+    with agent_sessions() as db:
+        customer = db.get(Customer, customer_id)
+        enquiry = db.get(SalesEnquiry, enquiry_id)
+
+        assert customer is not None
+        assert enquiry is not None
+
+        assert customer.sales_stage == "qualified"
+        assert customer.status == "active"
+        assert enquiry.priority == "high"
+        assert enquiry.status == "in_progress"
+        assert enquiry.estimated_value == Decimal("25000")
+
+
+def test_cancelled_enrichment_has_no_database_effect(
+    agent_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+    agent_records: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    customer_id = agent_records["customer_id"]
+    enquiry_id = agent_records["enquiry_id"]
+
+    with agent_sessions() as db:
+        customer = db.get(Customer, customer_id)
+        enquiry = db.get(SalesEnquiry, enquiry_id)
+
+        assert customer is not None
+        assert enquiry is not None
+
+        original_sales_stage = customer.sales_stage
+        original_priority = enquiry.priority
+
+    _chat_model(
+        monkeypatch,
+        _tool_call(
+            "get_customer_profile",
+            {"customer_id": customer_id},
+            "read-profile",
+        ),
+        _tool_call(
+            "get_sales_enquiries",
+            {"customer_id": customer_id},
+            "read-enquiries",
+        ),
+        _tool_call(
+            "apply_enrichment",
+            {
+                "customer_id": customer_id,
+                "enquiry_id": enquiry_id,
+                "sales_stage": "proposal",
+                "enquiry_priority": "urgent",
+            },
+            "apply-enrichment",
+        ),
+    )
+
+    proposal = _post_chat(
+        agent_client,
+        customer_id,
+        "Propose enrichment for this customer.",
+    )
+
+    pending = proposal["pending_action"]
+
+    assert pending is not None
+
+    response = agent_client.post(
+        f"/api/agent/actions/{pending['action_id']}/cancel"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+
+    with agent_sessions() as db:
+        customer = db.get(Customer, customer_id)
+        enquiry = db.get(SalesEnquiry, enquiry_id)
+
+        assert customer is not None
+        assert enquiry is not None
+
+        assert customer.sales_stage == original_sales_stage
+        assert enquiry.priority == original_priority
+
+
+def test_enrichment_requires_enquiry_id_for_enquiry_fields(
+    agent_client: TestClient,
+    agent_records: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    customer_id = agent_records["customer_id"]
+
+    _chat_model(
+        monkeypatch,
+        _tool_call(
+            "get_customer_profile",
+            {"customer_id": customer_id},
+            "read-profile",
+        ),
+        _tool_call(
+            "apply_enrichment",
+            {
+                "customer_id": customer_id,
+                "enquiry_priority": "high",
+            },
+            "apply-enrichment",
+        ),
+    )
+
+    proposal = _post_chat(
+        agent_client,
+        customer_id,
+        "Enrich the enquiry priority.",
+    )
+
+    pending = proposal["pending_action"]
+    assert pending is not None
+
+    response = agent_client.post(
+        f"/api/agent/actions/{pending['action_id']}/confirm"
+    )
+
+    assert response.status_code == 200
+
+    result = response.json()
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "enquiry_id_required"

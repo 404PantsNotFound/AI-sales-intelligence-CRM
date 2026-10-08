@@ -22,6 +22,7 @@ AgentActionName = Literal[
     "create_followup",
     "record_call_result",
     "complete_followup",
+    "apply_enrichment",
 ]
 
 

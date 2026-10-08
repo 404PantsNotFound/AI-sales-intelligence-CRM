@@ -6,9 +6,11 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
+from langchain_core.tools import StructuredTool
 from pydantic import SecretStr, ValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.agent.langchain_compat import create_compatible_agent
 from app.agent.model import create_chat_model
 from app.agent.tools import build_read_only_tools
 from app.core.config import settings
@@ -42,6 +44,28 @@ def _fake_tool_call(
             {"name": name, "args": arguments, "id": call_id, "type": "tool_call"}
         ],
     )
+
+
+def test_compatible_agent_routes_tool_calls_back_to_model() -> None:
+    tool = StructuredTool.from_function(
+        func=lambda value: f"read:{value}",
+        name="read_value",
+        description="Read a value.",
+    )
+    model = ToolCallingFakeChatModel(
+        responses=[
+            _fake_tool_call("read_value", {"value": "customer"}, call_id="read-call"),
+            AIMessage(content="Customer data was read."),
+        ]
+    )
+
+    agent = create_compatible_agent(model=model, tools=[tool])
+    branch = agent.builder.branches["model"]["model_to_tools"]
+    result = agent.invoke({"messages": [{"role": "user", "content": "Read it."}]})
+
+    assert branch.ends["model"] == "model"
+    assert result["messages"][-1].content == "Customer data was read."
+    assert [message.type for message in result["messages"]].count("tool") == 1
 
 
 def test_all_read_only_tools_return_structured_data(
@@ -216,11 +240,18 @@ def test_chat_returns_gemini_text_block_after_successful_crm_tool(
     assert body["tool_calls"][0]["success"] is True
 
 
+
 def test_failed_crm_read_tool_rolls_back_before_next_tool_uses_session(
     agent_client: TestClient,
     agent_records: dict[str, int],
+    agent_sessions: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "app.agent.agent.SessionLocal",
+        agent_sessions,
+    )
+
     model = ToolCallingFakeChatModel(
         responses=[
             _fake_tool_call(
@@ -236,7 +267,12 @@ def test_failed_crm_read_tool_rolls_back_before_next_tool_uses_session(
             AIMessage(content="Customer data was retrieved."),
         ]
     )
-    monkeypatch.setattr("app.services.agent_service.create_chat_model", lambda: model)
+
+    monkeypatch.setattr(
+        "app.services.agent_service.create_chat_model",
+        lambda: model,
+    )
+
     original_scalar = Session.scalar
     original_rollback = Session.rollback
     first_read = True

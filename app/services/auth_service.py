@@ -3,6 +3,7 @@ import logging
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
+from app.services.email_verification_service import verify_email
 
 from app.core.config import settings
 from app.core.exceptions import APIError
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 def _normalized_email(email: str) -> str:
     return email.strip().lower()
 
-
+# MANUAL EDIT
 def register_user(db: Session, payload: UserRegisterRequest) -> User:
     if not settings.allow_public_registration:
         raise APIError(
@@ -31,6 +32,7 @@ def register_user(db: Session, payload: UserRegisterRequest) -> User:
             status_code=403,
             code="registration_disabled",
         )
+
     if (
         settings.environment.strip().lower() == "production"
         and not settings.allow_public_registration_in_production
@@ -41,7 +43,15 @@ def register_user(db: Session, payload: UserRegisterRequest) -> User:
             code="registration_disabled",
         )
 
+    if not verify_email(payload.email):
+        raise APIError(
+            "Email is not valid.",
+            status_code=422,
+            code="invalid_email",
+        )
+
     normalized_email = _normalized_email(payload.email)
+
     try:
         with atomic_transaction(db):
             existing_id = db.scalar(
@@ -49,6 +59,7 @@ def register_user(db: Session, payload: UserRegisterRequest) -> User:
                 .where(func.lower(func.trim(User.email)) == normalized_email)
                 .limit(1)
             )
+
             if existing_id is not None:
                 raise APIError(
                     "A user with this email is already registered.",
@@ -63,12 +74,16 @@ def register_user(db: Session, payload: UserRegisterRequest) -> User:
                 role=payload.role,
                 is_active=True,
             )
+
             db.add(user)
             db.flush()
             db.refresh(user)
+
         return user
+
     except APIError:
         raise
+
     except IntegrityError as exc:
         log_database_exception(logger, "register_user", exc, conflict=True)
         raise APIError(
@@ -76,6 +91,7 @@ def register_user(db: Session, payload: UserRegisterRequest) -> User:
             status_code=409,
             code="duplicate_email",
         ) from exc
+
     except SQLAlchemyError as exc:
         log_database_exception(logger, "register_user", exc)
         raise APIError(
