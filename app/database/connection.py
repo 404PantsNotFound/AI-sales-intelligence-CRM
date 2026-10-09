@@ -42,14 +42,20 @@ def rollback_failed_transaction(db: Session) -> None:
 
 
 @contextmanager
-def atomic_transaction(db: Session) -> Generator[None, None, None]:
+def atomic_transaction(
+    db: Session,
+    *,
+    commit_existing: bool = True,
+) -> Generator[None, None, None]:
+    """Run atomically, optionally leaving an existing outer transaction open."""
     if not db.in_transaction():
         with db.begin():
             yield
     else:
         try:
             yield
-            db.commit()
+            if commit_existing:
+                db.commit()
         except Exception:
             db.rollback()
             raise

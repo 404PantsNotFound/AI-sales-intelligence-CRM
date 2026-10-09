@@ -2,15 +2,27 @@ import {
   createCall,
   createFollowup,
   createMeeting,
+  cancelAgentTask,
   cancelAgentAction,
+  checkSchedulingAvailability,
   chatWithAgent,
   confirmAgentAction,
+  createAgentTask,
   generateCustomerSummary,
   generateMeetingBrief,
+  getAgentPolicies,
+  getAgentTasks,
+  getCurrentUser,
   getCustomerActivity,
   getCustomerOverview,
   getCustomers,
   requireAuth,
+  rejectAgentAction,
+  resumeAgentTask,
+  submitAgentTaskInput,
+  updateAgentPolicy,
+  updateMeeting,
+  updateCall,
   updateFollowup,
 } from "./api.js";
 import {
@@ -42,6 +54,16 @@ const activityFormError = document.querySelector("#activity-form-error");
 const saveActivityButton = document.querySelector("#save-activity");
 const meetingBriefDialog = document.querySelector("#meeting-brief-dialog");
 const meetingBriefContent = document.querySelector("#meeting-brief-content");
+const hitlTaskList = document.querySelector("#hitl-task-list");
+const hitlError = document.querySelector("#hitl-error");
+const hitlStatus = document.querySelector("#hitl-status");
+const hitlCreateForm = document.querySelector("#create-hitl-task");
+const hitlActionType = document.querySelector("#hitl-action-type");
+const hitlCustomerContext = document.querySelector("#hitl-customer-context");
+const hitlPolicyPanel = document.querySelector("#hitl-policy-panel");
+const hitlPolicies = document.querySelector("#hitl-policies");
+const hitlContent = document.querySelector("#hitl-content");
+const toggleHitlButton = document.querySelector("#toggle-hitl");
 const PAGE_SIZE = 20;
 
 let currentPage = 1;
@@ -53,6 +75,10 @@ let activityFilter = "";
 let activityStartDate = "";
 let activityEndDate = "";
 let selectedActivityKind = "";
+let selectedMeetingForEdit = null;
+let selectedCallForEdit = null;
+let selectedFollowupForEdit = null;
+let selectedMeetingScheduleValue = "";
 let filteredActivity = [];
 let isSavingActivity = false;
 let aiSummary = null;
@@ -63,7 +89,12 @@ let agentChatMessages = [];
 let agentChatLoading = false;
 let agentActionLoading = false;
 let pendingAgentAction = null;
+let agentClarificationTask = null;
 let agentActionNotice = "";
+let hitlTasks = [];
+let hitlBusy = false;
+let hitlIsAdmin = false;
+let hitlPolicyModes = {};
 
 function resetCustomerAiState({ cancelPending = true } = {}) {
   if (cancelPending && pendingAgentAction?.action_id) {
@@ -78,6 +109,7 @@ function resetCustomerAiState({ cancelPending = true } = {}) {
   agentChatLoading = false;
   agentActionLoading = false;
   pendingAgentAction = null;
+  agentClarificationTask = null;
   agentActionNotice = "";
   if (meetingBriefDialog?.open) {
     meetingBriefDialog.close();
@@ -287,7 +319,11 @@ function renderActivityTimeline(section) {
     );
     body.append(
       top,
-      element("time", "timeline-date", formatDateTime(activity.activity_date)),
+      element(
+        "time",
+        "timeline-date",
+        formatDateTime(activity.activity_date, activity.activity_timezone),
+      ),
     );
     if (activity.description) {
       body.append(element("p", "timeline-description", activity.description));
@@ -302,17 +338,105 @@ function timelineSymbol(type) {
   return { enquiry: "E", meeting: "M", call: "C", follow_up: "F" }[type] ?? "•";
 }
 
-function formatDateTime(value) {
+function formatDateTime(value, timezoneName = null) {
   if (!value) return "Date not available";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Date not available";
-  return new Intl.DateTimeFormat(undefined, {
+  const options = {
     year: "numeric",
     month: "short",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
-  }).format(date);
+  };
+  if (timezoneName) options.timeZone = timezoneName;
+  return new Intl.DateTimeFormat(undefined, options).format(date);
+}
+
+function zonedDateTimeParts(timestamp, timezoneName) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezoneName,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(timestamp));
+  return Object.fromEntries(
+    parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]),
+  );
+}
+
+function dateTimeLocalValue(value, timezoneName) {
+  if (!value) return "";
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) return "";
+  const offsetMatch = /^([+-])(\d{2}):(\d{2})$/.exec(timezoneName || "");
+  if (offsetMatch) {
+    const sign = offsetMatch[1] === "+" ? 1 : -1;
+    const offset = sign * (Number(offsetMatch[2]) * 60 + Number(offsetMatch[3]));
+    return new Date(timestamp + offset * 60000).toISOString().slice(0, 16);
+  }
+  const parts = zonedDateTimeParts(timestamp, timezoneName || "UTC");
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
+function dateTimeLocalToISO(value, timezoneName, occurrence = "") {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+  if (!match) throw new RangeError("Enter a valid date and time.");
+  const [, year, month, day, hour, minute] = match;
+  const requested = Date.UTC(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+  );
+  const offsetMatch = /^([+-])(\d{2}):(\d{2})$/.exec(timezoneName || "");
+  if (offsetMatch) {
+    const sign = offsetMatch[1] === "+" ? 1 : -1;
+    const offset = sign * (Number(offsetMatch[2]) * 60 + Number(offsetMatch[3]));
+    return new Date(requested - offset * 60000).toISOString();
+  }
+
+  const timezone = timezoneName || "UTC";
+  const offsets = new Set();
+  for (let hours = -36; hours <= 36; hours += 3) {
+    const sample = requested + hours * 3600000;
+    const parts = zonedDateTimeParts(sample, timezone);
+    const rendered = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour),
+      Number(parts.minute),
+    );
+    offsets.add(rendered - sample);
+  }
+  const candidates = [...offsets]
+    .map((offset) => requested - offset)
+    .filter((candidate) => {
+      const parts = zonedDateTimeParts(candidate, timezone);
+      return (
+        parts.year === year
+        && parts.month === month
+        && parts.day === day
+        && parts.hour === hour
+        && parts.minute === minute
+      );
+    })
+    .sort((left, right) => left - right);
+  if (!candidates.length) {
+    throw new RangeError("That local time does not exist because of a daylight-saving change.");
+  }
+  if (candidates.length > 1 && !occurrence) {
+    throw new RangeError(
+      "That local time occurs twice. Choose the earlier or later occurrence.",
+    );
+  }
+  const timestamp = candidates[occurrence === "later" ? candidates.length - 1 : 0];
+  return new Date(timestamp).toISOString();
 }
 
 function appendListBlock(parent, title, items, emptyText, className = "ai-facts") {
@@ -346,9 +470,497 @@ function aiErrorMessage(error) {
 const agentActionLabels = {
   create_meeting: "Create meeting",
   create_followup: "Create follow-up",
+  schedule_call: "Schedule call",
   record_call_result: "Record call result",
   complete_followup: "Complete follow-up",
+  apply_enrichment: "Apply CRM enrichment",
 };
+
+const hitlActions = Object.keys(agentActionLabels);
+const hitlModes = ["automatic", "approval_required", "disabled"];
+
+function setHitlError(message = "") {
+  hitlError.textContent = message;
+  hitlError.hidden = !message;
+}
+
+function taskActionButton(label, className, onClick, disabled = false) {
+  const button = element("button", className, label);
+  button.type = "button";
+  button.disabled = disabled;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function renderHitlTask(task) {
+  const card = element("article", "hitl-task-card");
+  const heading = element("div", "hitl-task-heading");
+  const title = element("div");
+  title.append(
+    element("h3", "", "Task"),
+    element("code", "hitl-task-id", task.task_id),
+  );
+  heading.append(title, element("span", statusClass(task.status), humanize(task.status)));
+  card.append(heading);
+  card.append(
+    element("p", "hitl-task-message", task.message),
+    element("p", "hitl-task-expiry", `Expires ${formatDateTime(task.expires_at)}`),
+  );
+
+  const taskActions = element("div", "agent-action-buttons hitl-task-actions");
+  taskActions.append(
+    taskActionButton("Resume / revalidate", "button button-secondary", () => {
+      void refreshOneHitlTask(task.task_id);
+    }, hitlBusy),
+  );
+  if (["collecting_information", "ready_for_review", "awaiting_approval"].includes(task.status)) {
+    taskActions.append(
+      taskActionButton("Cancel task", "button button-secondary", () => {
+        void cancelHitlTask(task.task_id);
+      }, hitlBusy),
+    );
+  }
+  card.append(taskActions);
+
+  for (const [index, operation] of task.operations.entries()) {
+    const operationCard = element("section", "hitl-operation-card");
+    const operationHeading = element("div", "hitl-operation-heading");
+    operationHeading.append(
+      element("h4", "", agentActionLabels[operation.action] || humanize(operation.action)),
+      element("span", statusClass(operation.status), humanize(operation.status)),
+    );
+    operationCard.append(operationHeading);
+
+    const exactParameters = element("details", "hitl-parameters");
+    exactParameters.append(
+      element("summary", "", operation.action_id ? "Review exact proposed parameters" : "Review collected values"),
+    );
+    const parameterList = element("dl", "agent-action-details");
+    for (const [name, value] of Object.entries(operation.values || {})) {
+      const row = element("div");
+      row.append(
+        element("dt", "", name),
+        element(
+          "dd",
+          "",
+          value === null || value === undefined
+            ? "null"
+            : typeof value === "object"
+              ? JSON.stringify(value)
+              : String(value),
+        ),
+      );
+      parameterList.append(row);
+    }
+    exactParameters.append(parameterList);
+    operationCard.append(exactParameters);
+
+    if (operation.result) {
+      const result = operation.result;
+      const resultCard = element("div", `hitl-result hitl-result-${result.status}`);
+      resultCard.append(
+        element("strong", "", humanize(result.status)),
+        element("p", "", result.message || "Execution finished."),
+      );
+      if (result.record_id !== null && result.record_id !== undefined) {
+        resultCard.append(element("span", "", `Confirmed CRM record ID: ${result.record_id}`));
+      }
+      if (result.error_code) {
+        resultCard.append(element("span", "hitl-error-code", `Reference: ${result.error_code}`));
+      }
+      operationCard.append(resultCard);
+    }
+
+    if (
+      task.status === "collecting_information"
+      && !operation.action_id
+      && Array.isArray(operation.fields)
+      && operation.fields.length
+    ) {
+      const form = element("form", "hitl-clarification-form");
+      const fields = element("div", "hitl-fields");
+      for (const field of operation.fields) {
+        const wrapper = element("label", "activity-field");
+        wrapper.append(element("span", "", field.label));
+        let control;
+        if (field.input_type === "textarea") {
+          control = element("textarea");
+          control.rows = 3;
+        } else if (field.input_type === "select" || field.input_type === "record") {
+          control = element("select");
+          const placeholder = element(
+            "option",
+            "",
+            field.input_type === "record" ? "Choose a CRM record by ID" : "Choose an option",
+          );
+          placeholder.value = "";
+          control.append(placeholder);
+          for (const choice of field.choices || []) {
+            const option = element("option", "", choice.label);
+            option.value = String(choice.id);
+            option.selected = String(field.value ?? "") === option.value;
+            control.append(option);
+          }
+        } else {
+          control = element("input");
+            control.type = {
+              datetime: "datetime-local",
+              date: "date",
+              time: "time",
+              number: "number",
+            }[field.input_type] || "text";
+          if (control.type === "number") control.step = "any";
+          if (control.type === "datetime-local" && field.value) {
+            const timezoneName = field.name === "scheduled_at"
+              ? operation.values.scheduled_timezone
+                || Intl.DateTimeFormat().resolvedOptions().timeZone
+              : field.name === "due_date"
+                ? operation.values.due_timezone
+                  || Intl.DateTimeFormat().resolvedOptions().timeZone
+                : "UTC";
+            control.value = dateTimeLocalValue(field.value, timezoneName);
+          }
+        }
+        control.name = field.name;
+        control.required = Boolean(field.required);
+        if (
+          field.input_type === "timezone"
+          && !field.value
+        ) {
+          control.value = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+        }
+        if (control.tagName !== "SELECT" && control.type !== "datetime-local" && field.value !== null && field.value !== undefined) {
+          control.value = String(field.value);
+        }
+        wrapper.append(control);
+        if (field.help_text) wrapper.append(element("small", "hitl-field-help", field.help_text));
+        fields.append(wrapper);
+      }
+      form.append(fields);
+      const formError = element("p", "hitl-error");
+      formError.hidden = true;
+      formError.setAttribute("role", "alert");
+      form.append(formError);
+      const submit = element("button", "button button-primary", "Save details");
+      submit.type = "submit";
+      submit.disabled = hitlBusy;
+      form.append(submit);
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (hitlBusy || !form.reportValidity()) return;
+        const values = {};
+        try {
+          const rawValues = Object.fromEntries(
+            [...new FormData(form).entries()].map(([name, value]) => [
+              name,
+              String(value).trim(),
+            ]),
+          );
+          for (const [name, value] of Object.entries(rawValues)) {
+            const field = operation.fields.find((candidate) => candidate.name === name);
+            if (!value) continue;
+            if (field?.input_type === "datetime") {
+              const zoneName = name === "scheduled_at"
+                ? rawValues.scheduled_timezone
+                : name === "due_date"
+                  ? rawValues.due_timezone
+                  : "UTC";
+              const occurrence = name === "scheduled_at"
+                ? rawValues.scheduled_time_occurrence
+                : rawValues.due_time_occurrence;
+              values[name] = dateTimeLocalToISO(value, zoneName || "UTC", occurrence || "");
+            } else if (field?.input_type === "number") {
+              values[name] = Number(value);
+            } else if (field?.input_type === "record" && /^\d+$/.test(value)) {
+              values[name] = Number(value);
+            } else {
+              values[name] = value;
+            }
+          }
+        } catch (error) {
+          formError.textContent = error.message || "Enter a valid local date and time.";
+          formError.hidden = false;
+          return;
+        }
+        void submitHitlInputs(task.task_id, index, values, formError, operation.action);
+      });
+      operationCard.append(form);
+    }
+
+    if (operation.status === "pending" && operation.action_id) {
+      const decisionButtons = element("div", "agent-action-buttons");
+      decisionButtons.append(
+        taskActionButton("Approve & execute", "button button-primary", () => {
+          void decideHitlAction(operation.action_id, "approve");
+        }, hitlBusy),
+        taskActionButton("Reject", "button button-secondary", () => {
+          void decideHitlAction(operation.action_id, "reject");
+        }, hitlBusy),
+        taskActionButton("Cancel action", "button button-secondary", () => {
+          void decideHitlAction(operation.action_id, "cancel");
+        }, hitlBusy),
+      );
+      operationCard.append(decisionButtons);
+    }
+    card.append(operationCard);
+  }
+  return card;
+}
+
+function renderHitlTasks(tasks) {
+  hitlTaskList.replaceChildren();
+  if (!tasks.length) {
+    hitlTaskList.append(element("p", "hitl-empty", "No saved agent tasks yet."));
+    return;
+  }
+  for (const task of tasks) hitlTaskList.append(renderHitlTask(task));
+}
+
+async function refreshHitlTasks() {
+  if (!requireAuth() || hitlBusy) return;
+  hitlBusy = true;
+  setHitlError("");
+  hitlStatus.textContent = "Refreshing saved tasks from the server…";
+  try {
+    hitlTasks = await getAgentTasks();
+    if (agentClarificationTask) {
+      agentClarificationTask = hitlTasks.find(
+        (task) => task.task_id === agentClarificationTask.task_id,
+      ) || agentClarificationTask;
+    }
+    renderHitlTasks(hitlTasks);
+    hitlStatus.textContent = `Updated from server · ${hitlTasks.length} saved ${hitlTasks.length === 1 ? "task" : "tasks"}`;
+  } catch (error) {
+    setHitlError(error.message || "Unable to refresh HITL tasks.");
+    hitlStatus.textContent = "";
+  } finally {
+    hitlBusy = false;
+    renderHitlTasks(hitlTasks);
+  }
+}
+
+async function refreshOneHitlTask(taskId) {
+  if (hitlBusy) return;
+  hitlBusy = true;
+  setHitlError("");
+  try {
+    await resumeAgentTask(taskId);
+    hitlTasks = await getAgentTasks();
+    renderHitlTasks(hitlTasks);
+    hitlStatus.textContent = "Task revalidated with the server.";
+  } catch (error) {
+    setHitlError(error.message || "Unable to resume this task.");
+  } finally {
+    hitlBusy = false;
+    renderHitlTasks(hitlTasks);
+  }
+}
+
+async function submitHitlInputs(taskId, operationIndex, values, formError, action) {
+  hitlBusy = true;
+  setHitlError("");
+  formError.hidden = true;
+  let preserveForm = false;
+  try {
+    const updatedTask = await submitAgentTaskInput(taskId, operationIndex, values);
+    if (agentClarificationTask?.task_id === taskId) {
+      agentClarificationTask = updatedTask;
+    }
+    hitlTasks = await getAgentTasks();
+    renderHitlTasks(hitlTasks);
+    hitlStatus.textContent = "Submitted and revalidated by the server.";
+  } catch (error) {
+    formError.replaceChildren(element("span", "", error.message || "Unable to save task details."));
+    const suggestions = error.data?.error?.details?.suggestions;
+    preserveForm = error.code === "schedule_conflict";
+    const scheduleField = action === "create_meeting"
+      ? "scheduled_at"
+      : action === "schedule_call"
+        ? "scheduled_at"
+        : action === "create_followup"
+          ? "due_date"
+          : null;
+    if (error.code === "schedule_conflict" && scheduleField && Array.isArray(suggestions)) {
+      for (const suggestion of suggestions) {
+        if (!suggestion?.starts_at || !suggestion?.timezone) continue;
+        const button = element(
+          "button",
+          "button button-secondary schedule-suggestion",
+          `Use ${formatDateTime(suggestion.starts_at, suggestion.timezone)} (${suggestion.timezone})`,
+        );
+        button.type = "button";
+        button.addEventListener("click", () => {
+          const form = formError.closest("form");
+          if (!form) return;
+          if (action === "create_meeting") {
+            const dateInput = form.querySelector('[name="scheduled_date"]');
+            const timeInput = form.querySelector('[name="scheduled_time"]');
+            if (dateInput) dateInput.value = suggestion.starts_at.slice(0, 10);
+            if (timeInput) timeInput.value = suggestion.starts_at.slice(11, 16);
+          } else {
+            const timeInput = form.querySelector(`[name="${scheduleField}"]`);
+            if (timeInput) timeInput.value = suggestion.starts_at.slice(0, 16);
+          }
+          const timezoneField = action === "create_followup"
+            ? "due_timezone"
+            : "scheduled_timezone";
+          const timezoneInput = form.querySelector(`[name="${timezoneField}"]`);
+          if (timezoneInput) timezoneInput.value = suggestion.timezone;
+          const occurrenceField = action === "create_followup"
+            ? "due_time_occurrence"
+            : "scheduled_time_occurrence";
+          const occurrenceInput = form.querySelector(`[name="${occurrenceField}"]`);
+          if (occurrenceInput) occurrenceInput.value = "";
+          formError.replaceChildren(
+            element("span", "", "Alternative selected. Review the time and choose Save details to retry."),
+          );
+        });
+        formError.append(button);
+      }
+    }
+    formError.hidden = false;
+  } finally {
+    hitlBusy = false;
+    if (!preserveForm) renderHitlTasks(hitlTasks);
+  }
+}
+
+async function decideHitlAction(actionId, decision) {
+  if (hitlBusy) return;
+  hitlBusy = true;
+  setHitlError("");
+  try {
+    if (decision === "approve") {
+      const result = await confirmAgentAction(actionId);
+      hitlStatus.textContent = result.message || `Action ${result.status}.`;
+    } else if (decision === "reject") {
+      const result = await rejectAgentAction(actionId);
+      hitlStatus.textContent = result.message || "Action rejected.";
+    } else {
+      const result = await cancelAgentAction(actionId);
+      hitlStatus.textContent = result.message || "Action cancelled.";
+    }
+    hitlTasks = await getAgentTasks();
+    renderHitlTasks(hitlTasks);
+    if (selectedCustomer) await refreshSelectedCustomer();
+  } catch (error) {
+    setHitlError(error.message || "The action decision could not be completed.");
+    try {
+      hitlTasks = await getAgentTasks();
+      renderHitlTasks(hitlTasks);
+    } catch (refreshError) {
+      setHitlError(`${error.message || "Action failed."} ${refreshError.message || "State refresh also failed."}`);
+    }
+  } finally {
+    hitlBusy = false;
+    renderHitlTasks(hitlTasks);
+  }
+}
+
+async function cancelHitlTask(taskId) {
+  if (hitlBusy) return;
+  hitlBusy = true;
+  setHitlError("");
+  try {
+    const task = await cancelAgentTask(taskId);
+    hitlStatus.textContent = task.message || "Task cancelled.";
+    hitlTasks = await getAgentTasks();
+    renderHitlTasks(hitlTasks);
+  } catch (error) {
+    setHitlError(error.message || "Unable to cancel this task.");
+  } finally {
+    hitlBusy = false;
+    renderHitlTasks(hitlTasks);
+  }
+}
+
+function renderHitlPolicies(policies) {
+  hitlPolicyModes = policies;
+  hitlPolicies.replaceChildren();
+  for (const action of hitlActions) {
+    const row = element("div", "hitl-policy-row");
+    row.append(element("strong", "", agentActionLabels[action]));
+    const select = element("select", "hitl-policy-select");
+    select.setAttribute("aria-label", `Policy for ${agentActionLabels[action]}`);
+    for (const mode of hitlModes) {
+      const option = element("option", "", humanize(mode));
+      option.value = mode;
+      option.selected = policies[action] === mode;
+      select.append(option);
+    }
+    const save = element("button", "button button-secondary", "Save policy");
+    save.type = "button";
+    save.addEventListener("click", async () => {
+      save.disabled = true;
+      setHitlError("");
+      try {
+        await updateAgentPolicy(action, select.value);
+        renderHitlPolicies(await getAgentPolicies());
+        hitlStatus.textContent = `Policy updated for ${agentActionLabels[action]}.`;
+      } catch (error) {
+        setHitlError(error.message || "Unable to update action policy.");
+        save.disabled = false;
+      }
+    });
+    row.append(select, save);
+    hitlPolicies.append(row);
+  }
+}
+
+async function initializeHitl() {
+  try {
+    const user = await getCurrentUser();
+    hitlIsAdmin = user.role === "admin";
+    if (hitlIsAdmin) {
+      hitlPolicyPanel.hidden = false;
+      renderHitlPolicies(await getAgentPolicies());
+    }
+  } catch (error) {
+    setHitlError(error.message || "Unable to load the current account.");
+    return;
+  }
+  await refreshHitlTasks();
+}
+
+async function startHitlTask(event) {
+  event.preventDefault();
+  if (hitlBusy) return;
+  const values = selectedCustomerId ? { customer_id: Number(selectedCustomerId) } : {};
+  if (hitlActionType.value === "create_meeting") {
+    values.scheduled_timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  }
+  hitlBusy = true;
+  setHitlError("");
+  hitlStatus.textContent = "Creating a persisted task…";
+  try {
+    const task = await createAgentTask([
+      { action: hitlActionType.value, values },
+    ]);
+    hitlStatus.textContent = task.message;
+    hitlTasks = await getAgentTasks();
+    renderHitlTasks(hitlTasks);
+  } catch (error) {
+    setHitlError(error.message || "Unable to create the task.");
+    hitlStatus.textContent = "";
+  } finally {
+    hitlBusy = false;
+    renderHitlTasks(hitlTasks);
+  }
+}
+
+document.querySelector("#refresh-hitl").addEventListener("click", () => {
+  void refreshHitlTasks();
+});
+toggleHitlButton.addEventListener("click", () => {
+  const expanded = toggleHitlButton.getAttribute("aria-expanded") === "true";
+  hitlContent.hidden = expanded;
+  toggleHitlButton.setAttribute("aria-expanded", String(!expanded));
+  toggleHitlButton.querySelector(".hitl-collapse-label").textContent =
+    expanded ? "Expand" : "Collapse";
+  toggleHitlButton.querySelector(".hitl-collapse-icon").textContent =
+    expanded ? "⌄" : "⌃";
+});
+hitlCreateForm.addEventListener("submit", startHitlTask);
 
 function appendAgentChat(parent, customer) {
   const chat = element("section", "agent-chat");
@@ -357,7 +969,7 @@ function appendAgentChat(parent, customer) {
     element(
       "p",
       "ai-status",
-      "Ask about this customer or request an action. CRM changes always require your confirmation.",
+      "Ask about this customer or request a CRM action. Current server policy determines whether explicit approval is required.",
     ),
   );
   const messages = element("div", "agent-chat-messages");
@@ -382,6 +994,9 @@ function appendAgentChat(parent, customer) {
   }
   if (pendingAgentAction) {
     appendPendingActionCard(chat, pendingAgentAction, customer);
+  }
+  if (agentClarificationTask) {
+    chat.append(renderHitlTask(agentClarificationTask));
   }
 
   const form = element("form", "agent-chat-form");
@@ -420,33 +1035,13 @@ function appendPendingActionCard(parent, pending, customer) {
   );
   const payload = pending.payload || {};
   const details = element("dl", "agent-action-details");
-  const customerName = payload.customer_id === customer.customer_id
-    ? `${customer.customer_name} · ${customer.company?.company_name || "Company unavailable"}`
-    : `Customer #${payload.customer_id}`;
-  const followup = customer.followups?.find(
-    (record) => record.followup_id === payload.followup_id,
-  );
-  const fields = [
-    ["Customer", customerName],
-    ["Follow-up", followup ? `${followup.type}: ${followup.description || "No description"}` : null],
-    ["Date", payload.scheduled_at || payload.due_date || payload.actual_time],
-    ["Duration", payload.duration ? `${payload.duration} minutes` : null],
-    ["Agenda", payload.agenda],
-    ["Type", payload.type],
-    ["Description", payload.description],
-    ["Outcome", payload.outcome],
-    ["Notes", payload.notes],
-  ];
-  for (const [label, value] of fields) {
-    if (!value) continue;
+  for (const [name, value] of Object.entries(payload)) {
     const row = element("div");
     row.append(
-      element("dt", "", label),
-      element(
-        "dd",
-        "",
-        label === "Date" ? formatDateTime(value) : displayValue(value),
-      ),
+      element("dt", "", name),
+      element("dd", "", typeof value === "object" && value !== null
+        ? JSON.stringify(value)
+        : displayValue(value)),
     );
     details.append(row);
   }
@@ -468,7 +1063,13 @@ function appendPendingActionCard(parent, pending, customer) {
   cancel.addEventListener("click", () => {
     void cancelPendingAgentAction();
   });
-  actions.append(confirm, cancel);
+  const reject = element("button", "button button-secondary", "Reject");
+  reject.type = "button";
+  reject.disabled = agentActionLoading;
+  reject.addEventListener("click", () => {
+    void rejectPendingAgentAction();
+  });
+  actions.append(confirm, reject, cancel);
   card.append(actions);
   parent.append(card);
 }
@@ -483,6 +1084,11 @@ async function sendAgentChatMessage(message, customerId) {
     if (String(selectedCustomerId) !== String(customerId)) return;
     agentChatMessages.push({ role: "assistant", text: response.response });
     pendingAgentAction = response.pending_action || null;
+    agentClarificationTask = response.clarification_task || null;
+    if (agentClarificationTask) {
+      hitlTasks = await getAgentTasks();
+      renderHitlTasks(hitlTasks);
+    }
   } catch (error) {
     if (String(selectedCustomerId) !== String(customerId)) return;
     agentChatMessages.push({
@@ -511,6 +1117,7 @@ async function confirmPendingAgentAction(customerId) {
     if (result.status === "completed") {
       await refreshSelectedCustomer();
     }
+    await refreshHitlTasks();
   } catch (error) {
     agentActionNotice = aiErrorMessage(error);
     if (error?.status === 404 || error?.status === 410) {
@@ -534,11 +1141,31 @@ async function cancelPendingAgentAction() {
     const result = await cancelAgentAction(actionId);
     pendingAgentAction = null;
     agentChatMessages.push({ role: "assistant", text: result.message });
+    await refreshHitlTasks();
   } catch (error) {
     agentActionNotice = aiErrorMessage(error);
     if (error?.status === 404 || error?.status === 410) {
       pendingAgentAction = null;
     }
+  } finally {
+    agentActionLoading = false;
+    if (selectedCustomer) renderCustomer(selectedCustomer);
+  }
+}
+
+async function rejectPendingAgentAction() {
+  if (!pendingAgentAction || agentActionLoading) return;
+  const actionId = pendingAgentAction.action_id;
+  agentActionLoading = true;
+  agentActionNotice = "";
+  renderCustomer(selectedCustomer);
+  try {
+    const result = await rejectAgentAction(actionId);
+    pendingAgentAction = null;
+    agentChatMessages.push({ role: "assistant", text: result.message });
+    await refreshHitlTasks();
+  } catch (error) {
+    agentActionNotice = aiErrorMessage(error);
   } finally {
     agentActionLoading = false;
     if (selectedCustomer) renderCustomer(selectedCustomer);
@@ -724,7 +1351,11 @@ function appendActivities(parent, customer) {
       const card = element("article", "activity-record-card");
       const top = element("div", "activity-record-top");
       top.append(
-        element("strong", "", formatDateTime(meeting.scheduled_at)),
+        element(
+          "strong",
+          "",
+          formatDateTime(meeting.scheduled_at, meeting.scheduled_timezone),
+        ),
         element("span", statusClass(meeting.status), humanize(meeting.status)),
       );
       card.append(top);
@@ -739,7 +1370,14 @@ function appendActivities(parent, customer) {
         () => prepareMeeting(meeting.meeting_id),
       );
       prepareButton.disabled = meetingBriefLoadingId === meeting.meeting_id;
-      card.append(prepareButton);
+      card.append(
+        makeActionButton(
+          "Edit",
+          "small-action-button",
+          () => openActivityDialog("meeting", meeting),
+        ),
+        prepareButton,
+      );
       list.append(card);
     }
     meetingSection.append(list);
@@ -762,12 +1400,28 @@ function appendActivities(parent, customer) {
         element("span", statusClass(call.status), humanize(call.status)),
       );
       card.append(top);
-      appendOptionalText(card, "Time", formatDateTime(call.actual_time || call.scheduled_at));
+      if (call.scheduled_at) {
+        appendOptionalText(
+          card,
+          "Scheduled time",
+          formatDateTime(call.scheduled_at, call.scheduled_timezone),
+        );
+      }
+      if (call.actual_time) {
+        appendOptionalText(card, "Actual time", formatDateTime(call.actual_time));
+      }
       appendOptionalText(card, "Outcome", call.outcome);
       appendOptionalText(card, "Notes", call.notes);
       if (call.next_followup_date) {
         appendOptionalText(card, "Next follow-up", formatDateTime(call.next_followup_date));
       }
+      card.append(
+        makeActionButton(
+          "Edit",
+          "small-action-button",
+          () => openActivityDialog("call", call),
+        ),
+      );
       list.append(card);
     }
     callSection.append(list);
@@ -791,7 +1445,11 @@ function appendActivities(parent, customer) {
       );
       card.append(top);
       appendOptionalText(card, "Type", humanize(followup.type));
-      appendOptionalText(card, "Due", formatDateTime(followup.due_date));
+      appendOptionalText(
+        card,
+        "Due",
+        formatDateTime(followup.due_date, followup.due_timezone),
+      );
       appendOptionalText(card, "Related enquiry", labelForId(customer.sales_enquiries, "enquiry_id", followup.enquiry_id, "product"));
       appendOptionalText(card, "Related meeting", labelForId(meetings, "meeting_id", followup.meeting_id, "agenda"));
       appendOptionalText(card, "Related call", labelForId(calls, "call_id", followup.call_id, "call_type"));
@@ -804,6 +1462,13 @@ function appendActivities(parent, customer) {
         completeButton.dataset.followupId = String(followup.followup_id);
         card.append(completeButton);
       }
+      card.append(
+        makeActionButton(
+          "Edit",
+          "small-action-button",
+          () => openActivityDialog("followup", followup),
+        ),
+      );
       list.append(card);
     }
     followupSection.append(list);
@@ -954,6 +1619,7 @@ async function selectCustomer(customerId) {
   if (!requireAuth()) return;
   resetCustomerAiState({ cancelPending: true });
   selectedCustomerId = customerId;
+  hitlCustomerContext.textContent = `New tasks will start with customer #${customerId}; confirm the record in the form.`;
   selectedCustomer = null;
   resultList.querySelectorAll(".customer-result").forEach((button) => {
     button.setAttribute("aria-current", String(button.dataset.customerId) === String(customerId));
@@ -1012,7 +1678,7 @@ function relationshipOptions(records, idKey, nameSelector) {
   }));
 }
 
-function configureActivityForm(kind) {
+function configureActivityForm(kind, record = null) {
   activityFields.replaceChildren();
   const contacts = relationshipOptions(
     selectedCustomer?.contacts,
@@ -1027,7 +1693,7 @@ function configureActivityForm(kind) {
   const meetings = relationshipOptions(
     selectedCustomer?.meetings,
     "meeting_id",
-    (meeting) => meeting.agenda || formatDateTime(meeting.scheduled_at),
+    (meeting) => meeting.agenda || formatDateTime(meeting.scheduled_at, meeting.scheduled_timezone),
   );
   const calls = relationshipOptions(
     selectedCustomer?.calls,
@@ -1036,20 +1702,31 @@ function configureActivityForm(kind) {
   );
 
   if (kind === "meeting") {
-    activityDialogTitle.textContent = "Schedule meeting";
+    activityDialogTitle.textContent = record ? "Edit meeting" : "Schedule meeting";
     addFormField({ name: "scheduled_at", label: "Date and time", type: "datetime-local", required: true });
+    addFormField({
+      name: "scheduled_time_occurrence",
+      label: "Repeated local time",
+      type: "select",
+      options: [
+        { value: "earlier", label: "Earlier occurrence" },
+        { value: "later", label: "Later occurrence" },
+      ],
+    });
     addFormField({ name: "duration", label: "Duration (minutes)", type: "number", min: 1 });
     addFormField({
       name: "contact_id",
       label: "Contact",
       type: "select",
       options: contacts,
+      defaultValue: record?.contact_id ?? "",
     });
     addFormField({
       name: "enquiry_id",
       label: "Related enquiry",
       type: "select",
       options: enquiries,
+      defaultValue: record?.enquiry_id ?? "",
     });
     addFormField({
       name: "status",
@@ -1061,26 +1738,44 @@ function configureActivityForm(kind) {
         { value: "cancelled", label: "Cancelled" },
         { value: "no_show", label: "No show" },
       ],
-      defaultValue: "scheduled",
+      defaultValue: record?.status ?? "scheduled",
     });
     addFormField({ name: "agenda", label: "Agenda", type: "textarea" });
     addFormField({ name: "notes", label: "Notes", type: "textarea" });
   } else if (kind === "call") {
-    activityDialogTitle.textContent = "Log call";
+    activityDialogTitle.textContent = record ? "Edit call" : "Log call";
     addFormField({ name: "call_type", label: "Call type" });
     addFormField({ name: "scheduled_at", label: "Scheduled time", type: "datetime-local" });
+    addFormField({
+      name: "scheduled_timezone",
+      label: "Scheduling timezone (IANA)",
+      defaultValue: record?.scheduled_timezone
+        || Intl.DateTimeFormat().resolvedOptions().timeZone,
+    });
+    addFormField({
+      name: "scheduled_time_occurrence",
+      label: "Repeated local time",
+      type: "select",
+      options: [
+        { value: "earlier", label: "Earlier occurrence" },
+        { value: "later", label: "Later occurrence" },
+      ],
+    });
+    addFormField({ name: "duration", label: "Duration (minutes)", type: "number", min: 1 });
     addFormField({ name: "actual_time", label: "Actual time", type: "datetime-local" });
     addFormField({
       name: "contact_id",
       label: "Contact",
       type: "select",
       options: contacts,
+      defaultValue: record?.contact_id ?? "",
     });
     addFormField({
       name: "enquiry_id",
       label: "Related enquiry",
       type: "select",
       options: enquiries,
+      defaultValue: record?.enquiry_id ?? "",
     });
     addFormField({
       name: "status",
@@ -1093,17 +1788,20 @@ function configureActivityForm(kind) {
         { value: "failed", label: "Failed" },
         { value: "cancelled", label: "Cancelled" },
       ],
-      defaultValue: "scheduled",
+      defaultValue: record?.status ?? "scheduled",
     });
-    addFormField({ name: "outcome", label: "Outcome" });
-    addFormField({ name: "notes", label: "Notes", type: "textarea" });
+    addFormField({ name: "outcome", label: "Outcome", defaultValue: record?.outcome ?? "" });
+    addFormField({ name: "notes", label: "Notes", type: "textarea", defaultValue: record?.notes ?? "" });
     addFormField({ name: "next_followup_date", label: "Next follow-up", type: "datetime-local" });
+    const callType = activityFields.querySelector('[name="call_type"]');
+    if (callType) callType.value = record?.call_type ?? "";
   } else {
-    activityDialogTitle.textContent = "Add follow-up";
+    activityDialogTitle.textContent = record ? "Edit follow-up" : "Add follow-up";
     addFormField({
       name: "type",
       label: "Type",
       type: "select",
+      defaultValue: record?.type ?? "",
       required: true,
       options: [
         { value: "call", label: "Call" },
@@ -1125,38 +1823,109 @@ function configureActivityForm(kind) {
         { value: "cancelled", label: "Cancelled" },
         { value: "overdue", label: "Overdue" },
       ],
-      defaultValue: "pending",
+      defaultValue: record?.status ?? "pending",
     });
-    addFormField({ name: "assigned_to", label: "Assigned to" });
+    addFormField({
+      name: "due_timezone",
+      label: "Due-time timezone (IANA)",
+      defaultValue: record?.due_timezone
+        || Intl.DateTimeFormat().resolvedOptions().timeZone,
+    });
+    addFormField({
+      name: "due_time_occurrence",
+      label: "Repeated local time",
+      type: "select",
+      options: [
+        { value: "earlier", label: "Earlier occurrence" },
+        { value: "later", label: "Later occurrence" },
+      ],
+    });
+    addFormField({ name: "duration", label: "Reserved duration (minutes)", type: "number", min: 1 });
+    addFormField({
+      name: "assigned_to",
+      label: "Assigned to",
+      defaultValue: record?.assigned_to ?? "",
+    });
     addFormField({
       name: "enquiry_id",
       label: "Related enquiry",
       type: "select",
       options: enquiries,
+      defaultValue: record?.enquiry_id ?? "",
     });
     addFormField({
       name: "meeting_id",
       label: "Related meeting",
       type: "select",
       options: meetings,
+      defaultValue: record?.meeting_id ?? "",
     });
     addFormField({
       name: "call_id",
       label: "Related call",
       type: "select",
       options: calls,
+      defaultValue: record?.call_id ?? "",
     });
-    addFormField({ name: "description", label: "Description", type: "textarea" });
+    addFormField({
+      name: "description",
+      label: "Description",
+      type: "textarea",
+      defaultValue: record?.description ?? "",
+    });
+  }
+
+  if (kind === "meeting" && record) {
+    const scheduledAt = activityFields.querySelector('[name="scheduled_at"]');
+    scheduledAt.value = dateTimeLocalValue(
+      record.scheduled_at,
+      record.scheduled_timezone || "UTC",
+    );
+    selectedMeetingScheduleValue = scheduledAt.value;
+    const duration = activityFields.querySelector('[name="duration"]');
+    if (duration) duration.value = record.duration ?? "";
+    const agenda = activityFields.querySelector('[name="agenda"]');
+    if (agenda) agenda.value = record.agenda ?? "";
+    const notes = activityFields.querySelector('[name="notes"]');
+    if (notes) notes.value = record.notes ?? "";
+  } else if (kind === "call" && record) {
+    for (const field of ["scheduled_at", "actual_time", "next_followup_date"]) {
+      const input = activityFields.querySelector(`[name="${field}"]`);
+      const zone = field === "scheduled_at"
+        ? record.scheduled_timezone || "UTC"
+        : Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (input) input.value = dateTimeLocalValue(record[field], zone);
+    }
+    const duration = activityFields.querySelector('[name="duration"]');
+    if (duration) duration.value = record.duration ?? "";
+  } else if (kind === "followup" && record) {
+    const dueDate = activityFields.querySelector('[name="due_date"]');
+    if (dueDate) {
+      dueDate.value = dateTimeLocalValue(
+        record.due_date,
+        record.due_timezone || "UTC",
+      );
+    }
+    const duration = activityFields.querySelector('[name="duration"]');
+    if (duration) duration.value = record.duration ?? "";
+  } else {
+    selectedMeetingScheduleValue = "";
   }
 }
 
-function openActivityDialog(kind) {
+function openActivityDialog(kind, meeting = null) {
   if (!selectedCustomerId || !selectedCustomer) return;
   selectedActivityKind = kind;
+  selectedMeetingForEdit = kind === "meeting" ? meeting : null;
+  selectedCallForEdit = kind === "call" ? meeting : null;
+  selectedFollowupForEdit = kind === "followup" ? meeting : null;
   activityForm.reset();
   activityFormError.hidden = true;
-  activityFormError.textContent = "";
-  configureActivityForm(kind);
+  activityFormError.replaceChildren();
+  configureActivityForm(kind, meeting);
+  saveActivityButton.textContent = meeting
+    ? `Save ${kind === "followup" ? "follow-up" : kind}`
+    : "Save activity";
   activityDialog.showModal();
   activityFields.querySelector("input, select, textarea")?.focus();
 }
@@ -1178,12 +1947,6 @@ function activityFormPayload(kind, formData) {
     call: ["contact_id", "enquiry_id"],
     followup: ["enquiry_id", "meeting_id", "call_id"],
   }[kind];
-  const dateFields = {
-    meeting: ["scheduled_at"],
-    call: ["scheduled_at", "actual_time", "next_followup_date"],
-    followup: ["due_date"],
-  }[kind];
-
   for (const field of stringFields) {
     payload[field] = optionalFormValue(formData, field);
   }
@@ -1191,15 +1954,164 @@ function activityFormPayload(kind, formData) {
     const value = optionalFormValue(formData, field);
     payload[field] = value ? Number(value) : null;
   }
-  for (const field of dateFields) {
-    const value = optionalFormValue(formData, field);
-    payload[field] = value ? new Date(value).toISOString() : null;
-  }
   if (kind === "meeting") {
+    const localSchedule = optionalFormValue(formData, "scheduled_at");
+    const timezoneName = selectedMeetingForEdit?.scheduled_timezone
+      || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (
+      !selectedMeetingForEdit
+      || localSchedule !== selectedMeetingScheduleValue
+    ) {
+      payload.scheduled_at = dateTimeLocalToISO(
+        localSchedule,
+        timezoneName,
+        optionalFormValue(formData, "scheduled_time_occurrence"),
+      );
+      payload.scheduled_timezone = timezoneName;
+    }
     const duration = optionalFormValue(formData, "duration");
-    payload.duration = duration ? Number(duration) : null;
+    if (duration) payload.duration = Number(duration);
+  } else if (kind === "call") {
+    const timezoneName = optionalFormValue(formData, "scheduled_timezone")
+      || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const localSchedule = optionalFormValue(formData, "scheduled_at");
+    const oldSchedule = selectedCallForEdit?.scheduled_at
+      ? dateTimeLocalValue(
+        selectedCallForEdit.scheduled_at,
+        selectedCallForEdit.scheduled_timezone || "UTC",
+      )
+      : "";
+    const timezoneChanged = selectedCallForEdit
+      && timezoneName !== (selectedCallForEdit.scheduled_timezone || "UTC");
+    if (!selectedCallForEdit || localSchedule !== oldSchedule || timezoneChanged) {
+      payload.scheduled_at = localSchedule
+        ? dateTimeLocalToISO(
+          localSchedule,
+          timezoneName,
+          optionalFormValue(formData, "scheduled_time_occurrence"),
+        )
+        : null;
+      payload.scheduled_timezone = timezoneName;
+    }
+    for (const field of ["actual_time", "next_followup_date"]) {
+      const value = optionalFormValue(formData, field);
+      const oldValue = selectedCallForEdit?.[field]
+        ? dateTimeLocalValue(
+          selectedCallForEdit[field],
+          Intl.DateTimeFormat().resolvedOptions().timeZone,
+        )
+        : "";
+      if (!selectedCallForEdit || value !== oldValue) {
+        payload[field] = value
+          ? dateTimeLocalToISO(value, Intl.DateTimeFormat().resolvedOptions().timeZone)
+          : null;
+      }
+    }
+    const duration = optionalFormValue(formData, "duration");
+    if (duration) payload.duration = Number(duration);
+  } else {
+    const timezoneName = optionalFormValue(formData, "due_timezone")
+      || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const localDueDate = optionalFormValue(formData, "due_date");
+    const oldDueDate = selectedFollowupForEdit
+      ? dateTimeLocalValue(
+        selectedFollowupForEdit.due_date,
+        selectedFollowupForEdit.due_timezone || "UTC",
+      )
+      : "";
+    const timezoneChanged = selectedFollowupForEdit
+      && timezoneName !== (selectedFollowupForEdit.due_timezone || "UTC");
+    if (!selectedFollowupForEdit || localDueDate !== oldDueDate || timezoneChanged) {
+      payload.due_date = localDueDate
+        ? dateTimeLocalToISO(
+          localDueDate,
+          timezoneName,
+          optionalFormValue(formData, "due_time_occurrence"),
+        )
+        : null;
+      payload.due_timezone = timezoneName;
+    }
+    const duration = optionalFormValue(formData, "duration");
+    if (duration) payload.duration = Number(duration);
   }
   return payload;
+}
+
+function schedulingPreviewRequest(kind, payload) {
+  const record = kind === "meeting"
+    ? selectedMeetingForEdit
+    : kind === "call"
+      ? selectedCallForEdit
+      : selectedFollowupForEdit;
+  const status = payload.status ?? record?.status
+    ?? (kind === "meeting" ? "scheduled" : kind === "call" ? "scheduled" : "pending");
+  if (
+    (kind === "meeting" && status !== "scheduled")
+    || (kind === "call" && status !== "scheduled")
+    || (kind === "followup" && !["pending", "in_progress", "overdue"].includes(status))
+  ) {
+    return null;
+  }
+  const startField = kind === "followup" ? "due_date" : "scheduled_at";
+  const startsAt = payload[startField] !== undefined
+    ? payload[startField]
+    : record?.[startField];
+  if (!startsAt) return null;
+  const timezoneField = kind === "followup"
+    ? "due_timezone"
+    : "scheduled_timezone";
+  const timezoneName = payload[timezoneField]
+    ?? record?.[timezoneField]
+    ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+    ?? "UTC";
+  const activityType = kind === "followup" ? "followup" : kind;
+  return {
+    activity_type: activityType,
+    starts_at: startsAt,
+    duration_minutes: payload.duration ?? record?.duration ?? undefined,
+    timezone_name: timezoneName,
+    exclude_id: record
+      ? record[kind === "meeting" ? "meeting_id" : kind === "call" ? "call_id" : "followup_id"]
+      : undefined,
+  };
+}
+
+function showScheduleConflict(error) {
+  activityFormError.replaceChildren();
+  const message = error.status >= 500
+    ? "Unable to save activity. Please try again."
+    : error.message || "Unable to save activity.";
+  activityFormError.append(element("p", "", message));
+  const suggestions = error.data?.error?.details?.suggestions;
+  const timeField = selectedActivityKind === "followup" ? "due_date" : "scheduled_at";
+  if (error.code === "schedule_conflict" && Array.isArray(suggestions)) {
+    for (const suggestion of suggestions) {
+      if (!suggestion?.starts_at || !suggestion?.timezone) continue;
+      const button = element(
+        "button",
+        "button button-secondary schedule-suggestion",
+        `Use ${formatDateTime(suggestion.starts_at, suggestion.timezone)} (${suggestion.timezone})`,
+      );
+      button.type = "button";
+      button.addEventListener("click", () => {
+        const input = activityFields.querySelector(`[name="${timeField}"]`);
+        if (input) input.value = suggestion.starts_at.slice(0, 16);
+        const zoneField = selectedActivityKind === "followup"
+          ? "due_timezone"
+          : selectedActivityKind === "call"
+            ? "scheduled_timezone"
+            : null;
+        if (zoneField) {
+          const zoneInput = activityFields.querySelector(`[name="${zoneField}"]`);
+          if (zoneInput) zoneInput.value = suggestion.timezone;
+        }
+        activityFormError.hidden = true;
+        activityFormError.replaceChildren();
+      });
+      activityFormError.append(button);
+    }
+  }
+  activityFormError.hidden = false;
 }
 
 activityForm.addEventListener("submit", async (event) => {
@@ -1212,18 +2124,36 @@ activityForm.addEventListener("submit", async (event) => {
   try {
     try {
       const payload = activityFormPayload(selectedActivityKind, new FormData(activityForm));
-      if (selectedActivityKind === "meeting") await createMeeting(payload);
-      else if (selectedActivityKind === "call") await createCall(payload);
-      else await createFollowup(payload);
+      const previewRequest = schedulingPreviewRequest(selectedActivityKind, payload);
+      if (previewRequest) {
+        const availability = await checkSchedulingAvailability(previewRequest);
+        if (!availability.available) {
+          showScheduleConflict({
+            status: 409,
+            code: "schedule_conflict",
+            message: "The requested time overlaps another scheduled CRM activity.",
+            data: { error: { details: availability } },
+          });
+          return;
+        }
+      }
+      if (selectedActivityKind === "meeting" && selectedMeetingForEdit) {
+        await updateMeeting(selectedMeetingForEdit.meeting_id, payload);
+      } else if (selectedActivityKind === "meeting") await createMeeting(payload);
+      else if (selectedActivityKind === "call" && selectedCallForEdit) {
+        await updateCall(selectedCallForEdit.call_id, payload);
+      } else if (selectedActivityKind === "call") await createCall(payload);
+      else if (selectedFollowupForEdit) {
+        await updateFollowup(selectedFollowupForEdit.followup_id, payload);
+      } else await createFollowup(payload);
     } catch (error) {
-      activityFormError.textContent =
-        error.status >= 500
-          ? "Unable to save activity. Please try again."
-          : error.message || "Unable to save activity.";
-      activityFormError.hidden = false;
+      showScheduleConflict(error);
       return;
     }
     activityDialog.close();
+    selectedMeetingForEdit = null;
+    selectedCallForEdit = null;
+    selectedFollowupForEdit = null;
     try {
       await refreshSelectedCustomer();
     } catch {
@@ -1232,7 +2162,13 @@ activityForm.addEventListener("submit", async (event) => {
   } finally {
     isSavingActivity = false;
     saveActivityButton.disabled = false;
-    saveActivityButton.textContent = "Save activity";
+    saveActivityButton.textContent = selectedMeetingForEdit
+      ? "Save meeting"
+      : selectedCallForEdit
+        ? "Save call"
+        : selectedFollowupForEdit
+          ? "Save follow-up"
+          : "Save activity";
   }
 });
 
@@ -1292,6 +2228,7 @@ meetingBriefDialog.addEventListener("click", (event) => {
 
 mountAuthControls();
 if (requireAuth()) {
+  void initializeHitl();
   const initialParams = new URLSearchParams(window.location.search);
   const linkedCustomerId = initialParams.get("customer_id");
   if (linkedCustomerId && /^\d+$/.test(linkedCustomerId)) {

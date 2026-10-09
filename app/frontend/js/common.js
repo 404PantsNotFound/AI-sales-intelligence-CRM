@@ -37,28 +37,54 @@ export function humanize(value) {
 
 export function mountAuthControls() {
   const header = document.querySelector(".site-header");
-  if (!header || header.querySelector(".header-auth")) return;
+  if (!header) return;
 
-  const container = element("div", "header-auth");
-  const token = getAuthToken();
-  const user = getAuthenticatedUser();
+  if (!header.querySelector(".header-auth")) {
+    const container = element("div", "header-auth");
+    const token = getAuthToken();
+    const user = getAuthenticatedUser();
 
-  if (token) {
-    if (user?.email) {
-      container.append(element("span", "header-user-badge", user.email));
+    if (token) {
+      if (user?.email) {
+        container.append(element("span", "header-user-badge", user.email));
+      }
+      const logoutButton = element("button", "header-logout", "Sign out");
+      logoutButton.type = "button";
+      logoutButton.addEventListener("click", () => {
+        logoutUser();
+      });
+      container.append(logoutButton);
+    } else if (window.location.pathname !== "/login") {
+      const loginLink = element("a", "header-logout", "Sign in");
+      loginLink.href = "/login";
+      container.append(loginLink);
     }
-    const logoutButton = element("button", "header-logout", "Sign out");
-    logoutButton.type = "button";
-    logoutButton.addEventListener("click", () => {
-      logoutUser();
-    });
-    container.append(logoutButton);
-  } else if (window.location.pathname !== "/login") {
-    const loginLink = element("a", "header-logout", "Sign in");
-    loginLink.href = "/login";
-    container.append(loginLink);
+    header.append(container);
   }
 
-  header.append(container);
+  if (!header.querySelector(".theme-toggle")) {
+    const button = element("button", "theme-toggle");
+    button.type = "button";
+    button.setAttribute("aria-pressed", String(document.documentElement.dataset.theme === "dark"));
+    const updateLabel = () => {
+      const dark = document.documentElement.dataset.theme === "dark";
+      button.textContent = dark ? "☀" : "☾";
+      button.setAttribute("aria-label", `Switch to ${dark ? "light" : "dark"} mode`);
+      button.title = `Switch to ${dark ? "light" : "dark"} mode`;
+      button.setAttribute("aria-pressed", String(dark));
+    };
+    button.addEventListener("click", () => {
+      const nextTheme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = nextTheme;
+      try {
+        window.localStorage.setItem("salesdesk_theme", nextTheme);
+      } catch {
+        // Theme switching remains available when browser storage is restricted.
+      }
+      updateLabel();
+    });
+    updateLabel();
+    const authControls = header.querySelector(".header-auth");
+    header.insertBefore(button, authControls);
+  }
 }
-

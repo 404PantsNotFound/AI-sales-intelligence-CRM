@@ -156,6 +156,52 @@
 .agent-action-buttons { display: flex; justify-content: flex-end; gap: 8px; }
 .agent-action-notice { margin: 0; color: #a93c33; font-size: 10px; }
 .agent-chat-input:disabled, .agent-chat-form button:disabled, .agent-action-buttons button:disabled { cursor: wait; opacity: .65; }
+.hitl-panel { margin: 0 0 22px; padding: 20px; border: 1px solid #e4e9ef; border-radius: 8px; background: #fff; box-shadow: 0 4px 15px rgb(35 54 73 / 3%); }
+.hitl-panel-heading, .hitl-subheading { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; }
+.hitl-panel-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.hitl-collapse-button { min-width: 94px; }
+.hitl-collapse-icon { font-size: 15px; line-height: 1; }
+.hitl-content { min-width: 0; }
+.hitl-panel-heading h2, .hitl-subheading h3 { margin: 0; color: #263d53; font: 700 15px Manrope, sans-serif; }
+.hitl-panel-heading p:not(.eyebrow), .hitl-subheading > span { margin: 6px 0 0; color: #8290a0; font-size: 10px; line-height: 1.6; }
+.hitl-create-form { display: flex; align-items: end; gap: 10px; margin: 17px 0; padding: 13px; border: 1px solid #e8edf2; border-radius: 6px; background: #f9fbfd; }
+.hitl-create-form label { display: grid; min-width: 190px; gap: 6px; color: #53677a; font-size: 10px; font-weight: 600; }
+.hitl-create-form select, .hitl-policy-select { min-height: 36px; padding: 7px 9px; border: 1px solid #dfe5eb; border-radius: 5px; color: #354b60; background: white; font: inherit; font-size: 10px; }
+.hitl-context, .hitl-status, .hitl-empty { margin: 0; color: #8392a0; font-size: 10px; }
+.hitl-create-form .hitl-context { flex: 1; }
+.hitl-error { margin: 10px 0; color: #a93c33; font-size: 10px; line-height: 1.55; }
+.hitl-policy-panel { margin: 16px 0; padding: 14px; border: 1px solid #dfe9f4; border-radius: 6px; background: #f8fbfe; }
+.hitl-subheading { align-items: center; margin-bottom: 11px; }
+.hitl-subheading .eyebrow { margin: 0 0 5px; font-size: 9px; }
+.hitl-policy-list { display: grid; gap: 7px; }
+.hitl-policy-row { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(160px, .7fr) auto; align-items: center; gap: 9px; padding: 8px; border: 1px solid #e8edf2; border-radius: 5px; background: #fff; }
+.hitl-policy-row strong { color: #43596d; font-size: 10px; }
+.hitl-policy-row .button { min-height: 34px; padding: 0 10px; font-size: 9px; }
+.hitl-task-list { display: grid; gap: 12px; margin-top: 12px; }
+.hitl-task-card { display: grid; gap: 9px; padding: 14px; border: 1px solid #e3e9ef; border-radius: 7px; background: #fcfdff; }
+.hitl-task-heading, .hitl-operation-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.hitl-task-heading h3 { margin: 0 0 4px; color: #344b60; font: 700 12px Manrope, sans-serif; }
+.hitl-task-id { color: #8090a0; font-size: 9px; overflow-wrap: anywhere; }
+.hitl-task-message, .hitl-task-expiry { margin: 0; color: #657a8e; font-size: 10px; line-height: 1.5; }
+.hitl-task-expiry { color: #8795a2; }
+.hitl-task-actions { justify-content: flex-start; }
+.hitl-operation-card { display: grid; gap: 9px; padding: 11px; border: 1px solid #e8edf2; border-radius: 6px; background: #fff; }
+.hitl-operation-heading h4 { margin: 0; color: #43596d; font-size: 11px; }
+.hitl-parameters { min-width: 0; }
+.hitl-parameters summary { width: fit-content; color: #3970a8; cursor: pointer; font-size: 9px; font-weight: 600; }
+.hitl-operation-card .agent-action-details { margin-top: 7px; }
+.hitl-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.hitl-clarification-form { display: grid; gap: 10px; padding-top: 8px; border-top: 1px solid #edf0f4; }
+.hitl-clarification-form > .button { justify-self: end; min-height: 36px; font-size: 9px; }
+.hitl-field-help { color: #8b99a7; font-size: 9px; font-weight: 400; }
+.hitl-result { display: grid; gap: 4px; padding: 10px; border-radius: 5px; background: #f3f7fa; color: #52697e; font-size: 10px; }
+.hitl-result p { margin: 0; line-height: 1.5; }
+.hitl-result-completed { border: 1px solid #d2eadf; background: #f2faf6; color: #39735e; }
+.hitl-result-failed { border: 1px solid #f0d8d4; background: #fff7f6; color: #9c453d; }
+.hitl-error-code { color: #8b625e; font-size: 9px; }
+.status-awaiting_approval, .status-pending { color: #8c661c; background: #fff3d9; }
+.status-collecting_information, .status-ready_for_review, .status-executing { color: #35699d; background: #eaf3fc; }
+.status-rejected, .status-cancelled, .status-expired, .status-failed { color: #925048; background: #fbecea; }
 .meeting-brief-dialog { width: min(640px, calc(100vw - 30px)); }
 @media (max-width: 900px) {
   .intelligence-layout { grid-template-columns: minmax(230px, .75fr) minmax(0, 1.4fr); gap: 12px; }
@@ -171,6 +217,9 @@
   .search-panel { padding: 13px; }
   .search-form { gap: 7px; }
   .search-form .button { min-width: 80px; padding: 0 11px; }
+  .hitl-panel { padding: 14px; }
+  .hitl-create-form { align-items: stretch; flex-direction: column; }
+  .hitl-create-form label { min-width: 0; }
 }
 @media (max-width: 420px) {
   .profile-grid { grid-template-columns: 1fr 1fr; }
@@ -178,6 +227,11 @@
   .agent-chat-form { grid-template-columns: 1fr; }
   .agent-chat-form button { justify-self: end; }
   .activity-fields { grid-template-columns: 1fr; }
+  .hitl-fields { grid-template-columns: 1fr; }
+  .hitl-policy-row { grid-template-columns: 1fr; }
+  .hitl-panel-heading { align-items: stretch; flex-direction: column; }
+  .hitl-panel-heading .button { align-self: flex-start; }
+  .hitl-panel-actions { justify-content: flex-start; }
   .activity-field:has(textarea), .activity-field:has([name="agenda"]), .activity-field:has([name="notes"]), .activity-field:has([name="description"]) { grid-column: auto; }
  .activity-toolbar { justify-content: flex-end; gap: 5px; }
 }

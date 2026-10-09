@@ -132,6 +132,7 @@ def get_customer_activity(
                         activity_id=f"meeting-{meeting.meeting_id}",
                         activity_type="meeting",
                         activity_date=meeting.scheduled_at,
+                        activity_timezone=meeting.scheduled_timezone,
                         status=meeting.status,
                         title=meeting.agenda or "Meeting",
                         description=description,
@@ -139,11 +140,17 @@ def get_customer_activity(
                 )
         if activity_type in (None, "call"):
             for call in calls:
+                activity_date = call.actual_time or call.scheduled_at or call.created_at
                 activities.append(
                     ActivityResponse(
                         activity_id=f"call-{call.call_id}",
                         activity_type="call",
-                        activity_date=call.actual_time or call.scheduled_at or call.created_at,
+                        activity_date=activity_date,
+                        activity_timezone=(
+                            call.scheduled_timezone
+                            if call.actual_time is None and call.scheduled_at is not None
+                            else "UTC"
+                        ),
                         status=call.status,
                         title=call.call_type or "Sales call",
                         description=call.summary or call.outcome or call.notes,
@@ -156,6 +163,7 @@ def get_customer_activity(
                         activity_id=f"follow_up-{followup.followup_id}",
                         activity_type="follow_up",
                         activity_date=followup.due_date,
+                        activity_timezone=followup.due_timezone,
                         status=followup.status,
                         title=followup.type,
                         description=followup.description,

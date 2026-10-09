@@ -71,7 +71,7 @@ def register_user(db: Session, payload: UserRegisterRequest) -> User:
                 email=normalized_email,
                 full_name=payload.full_name,
                 password_hash=hash_password(payload.password),
-                role=payload.role,
+                role="sales",
                 is_active=True,
             )
 

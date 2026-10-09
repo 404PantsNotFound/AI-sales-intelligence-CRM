@@ -5,19 +5,32 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.config import settings
 from app.core.exceptions import APIError
 from app.core.logging_utils import log_database_exception
 from app.database.connection import atomic_transaction, rollback_failed_transaction
 from app.models import FollowUp
 from app.schemas.follow_up import FollowUpCreate, FollowUpUpdate
 from app.services.activity_validation import validate_customer_references
+from app.schemas.validators import normalize_utc_datetime, timezone_name_from_datetime
+from app.services.scheduling_service import (
+    ScheduleRequest,
+    lock_workspace_schedule,
+    require_available,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def create_followup(db: Session, data: FollowUpCreate) -> FollowUp:
+def create_followup(
+    db: Session,
+    data: FollowUpCreate,
+    *,
+    defer_commit: bool = False,
+) -> FollowUp:
     try:
-        with atomic_transaction(db):
+        with atomic_transaction(db, commit_existing=not defer_commit):
+            lock_workspace_schedule(db)
             validate_customer_references(
                 db,
                 data.customer_id,
@@ -25,7 +38,21 @@ def create_followup(db: Session, data: FollowUpCreate) -> FollowUp:
                 meeting_id=data.meeting_id,
                 call_id=data.call_id,
             )
-            followup = FollowUp(**data.model_dump())
+            active = data.status in {"pending", "in_progress", "overdue"}
+            duration = data.duration or settings.scheduling_followup_default_duration_minutes
+            if active:
+                require_available(
+                    db,
+                    ScheduleRequest(
+                        activity_type="followup",
+                        starts_at=data.due_date,
+                        duration_minutes=duration,
+                        timezone_name=data.due_timezone or "UTC",
+                    ),
+                )
+            values = data.model_dump()
+            values["duration"] = duration
+            followup = FollowUp(**values)
             db.add(followup)
             db.flush()
             db.refresh(followup)
@@ -65,11 +92,44 @@ def get_followup(db: Session, followup_id: int) -> FollowUp:
 def update_followup(db: Session, followup_id: int, data: FollowUpUpdate) -> FollowUp:
     try:
         with atomic_transaction(db):
+            lock_workspace_schedule(db)
             followup = db.get(FollowUp, followup_id)
             if followup is None:
                 raise APIError("Follow-up not found.", 404, "followup_not_found")
             updates = data.model_dump(exclude_unset=True)
+            if updates.get("due_date") is not None:
+                original_due = updates["due_date"]
+                if updates.get("due_timezone") is None:
+                    updates["due_timezone"] = (
+                        timezone_name_from_datetime(original_due)
+                        if original_due.tzinfo is not None
+                        and original_due.utcoffset() is not None
+                        else "UTC"
+                    )
+                updates["due_date"] = normalize_utc_datetime(original_due)
             customer_id = updates.get("customer_id", followup.customer_id)
+            due_date = normalize_utc_datetime(
+                updates.get("due_date", followup.due_date)
+            )
+            assert due_date is not None
+            duration = updates.get("duration", followup.duration)
+            if duration is None:
+                duration = settings.scheduling_followup_default_duration_minutes
+            target_status = updates.get("status", followup.status)
+            if target_status in {"pending", "in_progress", "overdue"}:
+                require_available(
+                    db,
+                    ScheduleRequest(
+                        activity_type="followup",
+                        starts_at=due_date,
+                        duration_minutes=duration,
+                        timezone_name=updates.get(
+                            "due_timezone", followup.due_timezone or "UTC"
+                        ),
+                        exclude_id=followup.followup_id,
+                    ),
+                )
+                updates["duration"] = duration
             validate_customer_references(
                 db,
                 customer_id,
@@ -98,9 +158,12 @@ def complete_customer_followup(
     db: Session,
     customer_id: int,
     followup_id: int,
+    *,
+    defer_commit: bool = False,
 ) -> FollowUp:
     try:
-        with atomic_transaction(db):
+        with atomic_transaction(db, commit_existing=not defer_commit):
+            lock_workspace_schedule(db)
             followup = db.scalar(
                 select(FollowUp)
                 .where(

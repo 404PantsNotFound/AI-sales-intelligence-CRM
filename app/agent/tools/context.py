@@ -6,6 +6,7 @@ from app.core.exceptions import APIError
 @dataclass
 class AgentToolContext:
     locked_customer_id: int | None = None
+    timezone_name: str | None = None
     customer_ids: set[int] = field(default_factory=set)
     contacts_by_customer: dict[int, set[int]] = field(default_factory=dict)
     enquiries_by_customer: dict[int, set[int]] = field(default_factory=dict)
@@ -111,5 +112,4 @@ class AgentToolContext:
             for item in enquiries:
                 if isinstance(item, dict) and isinstance(item.get("enquiry_id"), int):
                     self.remember_enquiry(customer_id, item["enquiry_id"])
-
 

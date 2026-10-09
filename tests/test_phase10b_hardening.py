@@ -20,7 +20,7 @@ from app.core.exceptions import APIError
 from app.core.logging_utils import contains_sensitive_material, redact_sensitive_text
 from app.core.rate_limit import InMemorySlidingWindowRateLimiter, ai_rate_limiter
 from app.main import create_app
-from app.models import Call, Company, Customer, FollowUp, Meeting
+from app.models import Call, Company, Customer, FollowUp, HitlActionProposal, Meeting, User
 from app.services import agent_action_service, ai_service
 from app.services.agent_action_state import PendingActionStore, pending_actions
 
@@ -342,7 +342,9 @@ def test_timezone_normalization_for_meetings_calls_followups_and_agent_proposals
             "create_meeting",
             {
                 "customer_id": customer_id,
-                "scheduled_at": "2026-10-20T16:00:00+04:00",
+                "scheduled_date": "2026-10-20",
+                "scheduled_time": "16:00",
+                "scheduled_timezone": "Asia/Dubai",
                 "status": "scheduled",
                 "agenda": "Offset proposal test",
             },
@@ -360,7 +362,8 @@ def test_timezone_normalization_for_meetings_calls_followups_and_agent_proposals
     assert chat_resp.status_code == 200
     pending_action = chat_resp.json()["pending_action"]
     assert pending_action is not None
-    assert pending_action["payload"]["scheduled_at"].startswith("2026-10-20T12:00:00")
+    assert pending_action["payload"]["scheduled_at"] == "2026-10-20T16:00:00+04:00"
+    assert pending_action["payload"]["scheduled_timezone"] == "Asia/Dubai"
 
 
 # =====================================================================
@@ -531,42 +534,52 @@ def test_sliding_window_rate_limiter_unit_behavior() -> None:
 
 
 # =====================================================================
-# PRIORITY 6: Pending Action Memory Capacity, Eviction & Checkpoint Cleanup
+# PRIORITY 6: Pending Action Persistence Capacity & Checkpoint Cleanup
 # =====================================================================
 
 
-def test_pending_action_store_capacity_and_eviction() -> None:
+def test_pending_action_store_capacity_does_not_evict_persisted_actions(
+    agent_sessions: sessionmaker[Session],
+) -> None:
     store = PendingActionStore(max_capacity=2)
-    a1 = store.add(
-        "create_meeting",
-        {"customer_id": 1},
-        "t1",
-        user_id=1,
-    )
-    a2 = store.add(
-        "create_meeting",
-        {"customer_id": 1},
-        "t2",
-        user_id=1,
-    )
-    assert len(store) == 2
+    with agent_sessions() as db:
+        user = User(
+            email="hitl.capacity@example.com",
+            full_name="HITL Capacity",
+            password_hash="test-hash",
+            role="sales",
+            is_active=True,
+        )
+        db.add(user)
+        db.commit()
 
-    # Creating a 3rd pending action when at capacity (2) evicts the oldest unclaimed entry (a1)
-    a3 = store.add(
-        "create_meeting",
-        {"customer_id": 1},
-        "t3",
-        user_id=1,
-    )
-    assert len(store) == 2
-    with pytest.raises(APIError) as exc_info:
-        store.claim(a1.action_id, user_id=1)
-    assert exc_info.value.status_code == 404
+        a1 = store.add(
+            db,
+            "create_meeting",
+            {"customer_id": 1},
+            "t1",
+            user_id=user.user_id,
+        )
+        store.add(
+            db,
+            "create_meeting",
+            {"customer_id": 1},
+            "t2",
+            user_id=user.user_id,
+        )
 
-    claimed_a2 = store.claim(a2.action_id, user_id=1)
-    claimed_a3 = store.claim(a3.action_id, user_id=1)
-    assert claimed_a2.action_id == a2.action_id
-    assert claimed_a3.action_id == a3.action_id
+        with pytest.raises(APIError) as exc_info:
+            store.add(
+                db,
+                "create_meeting",
+                {"customer_id": 1},
+                "t3",
+                user_id=user.user_id,
+            )
+        assert exc_info.value.status_code == 429
+
+        claimed = store.claim(db, a1.action_id, user_id=user.user_id)
+        assert claimed.action_id == a1.action_id
 
 
 def test_langgraph_checkpoint_is_deleted_immediately_after_interrupt(
@@ -650,10 +663,14 @@ def test_confirming_action_whose_underlying_record_became_invalid_marks_action_f
     assert body["status"] == "failed"
     assert body["error_code"] == "followup_not_found"
 
-    # And the action is removed from pending_actions so it cannot be replayed
-    with pytest.raises(APIError) as exc_info:
-        pending_actions.claim(action_id, user_id=1)
-    assert exc_info.value.status_code == 404
+    # The durable failed action remains auditable and cannot be replayed.
+    with agent_sessions() as db:
+        action = db.get(HitlActionProposal, action_id)
+        assert action is not None
+        assert action.status == "failed"
+        with pytest.raises(APIError) as exc_info:
+            pending_actions.claim(db, action_id, user_id=1)
+        assert exc_info.value.status_code == 404
 
 
 # =====================================================================

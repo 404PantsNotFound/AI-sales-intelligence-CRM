@@ -4,14 +4,14 @@ from alembic import context
 from sqlalchemy import create_engine, pool
 
 from app.core.config import settings
-from app.models import crm
+from app.models import Company
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = crm.Company.metadata
+target_metadata = Company.metadata
 
 
 def run_migrations_offline() -> None:

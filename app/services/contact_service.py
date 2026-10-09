@@ -9,7 +9,11 @@ from app.core.logging_utils import log_database_exception
 from app.database.connection import atomic_transaction
 from app.models import Contact
 from app.schemas.contact import ContactCreate, ContactUpdate
-from app.services.activity_validation import require_customer
+from app.services.activity_validation import (
+    require_customer,
+    validate_contact_reassignment,
+)
+from app.services.scheduling_service import lock_workspace_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -80,12 +84,20 @@ def get_contact(db: Session, contact_id: int) -> Contact:
 def update_contact(db: Session, contact_id: int, data: ContactUpdate) -> Contact:
     try:
         with atomic_transaction(db):
-            contact = db.get(Contact, contact_id)
+            if data.customer_id is not None:
+                lock_workspace_schedule(db)
+            contact = db.scalar(
+                select(Contact)
+                .where(Contact.contact_id == contact_id)
+                .with_for_update()
+            )
             if contact is None:
                 raise APIError("Contact not found.", 404, "contact_not_found")
             updates = data.model_dump(exclude_unset=True)
             target_customer_id = updates.get("customer_id", contact.customer_id)
             require_customer(db, target_customer_id)
+            if target_customer_id != contact.customer_id:
+                validate_contact_reassignment(db, contact.contact_id)
             if updates.get("email") is not None:
                 updates["email"] = str(updates["email"])
             if updates.get("is_primary") is True:

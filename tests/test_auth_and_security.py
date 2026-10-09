@@ -22,6 +22,7 @@ from app.models import (
     Contact,
     Customer,
     FollowUp,
+    HitlPolicyOverride,
     Meeting,
     SalesEnquiry,
     User,
@@ -239,6 +240,31 @@ def test_user_registration_success_and_argon2_hashing(
         assert stored.password_hash.startswith("$argon2")
 
 
+def test_public_registration_cannot_assign_admin_role(
+    unauthenticated_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+) -> None:
+    response = unauthenticated_client.post(
+        "/api/auth/register",
+        json={
+            "email": "self.promoted@example.com",
+            "password": "StrongPassword!234",
+            "full_name": "Self Promoted",
+            "role": "admin",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["role"] == "sales"
+
+    with agent_sessions() as db:
+        stored = db.scalar(
+            select(User).where(User.email == "self.promoted@example.com")
+        )
+        assert stored is not None
+        assert stored.role == "sales"
+
+
 def test_duplicate_email_registration_returns_409(
     unauthenticated_client: TestClient,
 ) -> None:
@@ -425,6 +451,63 @@ def test_expired_and_invalid_jwt_tokens_return_401(
 # ==================================================
 
 
+def test_ordinary_user_cannot_change_agent_policy(
+    unauthenticated_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+) -> None:
+    user = authorize_test_client(
+        agent_sessions,
+        unauthenticated_client,
+        email="policy.sales@example.com",
+    )
+    token, _ = create_access_token(user)
+    response = unauthenticated_client.put(
+        "/api/agent/policies/create_meeting",
+        json={"action": "create_meeting", "mode": "disabled"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+    with agent_sessions() as db:
+        assert db.get(HitlPolicyOverride, "create_meeting") is None
+
+
+def test_policy_update_rejects_mismatched_action_identifiers(
+    unauthenticated_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+) -> None:
+    admin = authorize_test_client(
+        agent_sessions,
+        unauthenticated_client,
+        email="policy.admin@example.com",
+        role="admin",
+    )
+    token, _ = create_access_token(admin)
+
+    before = unauthenticated_client.get(
+        "/api/agent/policies",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert before.status_code == 200
+
+    response = unauthenticated_client.put(
+        "/api/agent/policies/create_meeting",
+        json={"action": "create_followup", "mode": "disabled"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "policy_action_mismatch"
+
+    after = unauthenticated_client.get(
+        "/api/agent/policies",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert after.status_code == 200
+    assert after.json() == before.json()
+
+
 @pytest.mark.parametrize(
     ("method", "path"),
     [
@@ -458,6 +541,202 @@ def test_protected_endpoints_reject_missing_and_invalid_tokens(
     assert bad_token.json()["error"]["code"] == "invalid_token"
 
 
+def test_shared_crm_records_are_visible_and_manageable_across_users(
+    unauthenticated_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+    agent_records: dict[str, int],
+) -> None:
+    assert unauthenticated_client.get("/api/customers/1").status_code == 401
+
+    user_a = authorize_test_client(
+        agent_sessions,
+        unauthenticated_client,
+        email="shared.owner@example.com",
+    )
+    user_b = authorize_test_client(
+        agent_sessions,
+        unauthenticated_client,
+        email="shared.colleague@example.com",
+    )
+    token_a, _ = create_access_token(user_a)
+    token_b, _ = create_access_token(user_b)
+
+    headers_a = {"Authorization": f"Bearer {token_a}"}
+    headers_b = {"Authorization": f"Bearer {token_b}"}
+    before = unauthenticated_client.get(
+        "/api/analytics/overview",
+        headers=headers_b,
+    )
+    assert before.status_code == 200
+    before_enquiries = unauthenticated_client.get(
+        "/api/analytics/enquiries",
+        headers=headers_b,
+    )
+    assert before_enquiries.status_code == 200
+    before_followups = unauthenticated_client.get(
+        "/api/analytics/followups",
+        headers=headers_b,
+    )
+    assert before_followups.status_code == 200
+
+    created = unauthenticated_client.post(
+        "/api/customers",
+        headers=headers_a,
+        json={
+            "customer_name": "Shared Workspace Customer",
+            "status": "active",
+            "sales_stage": "qualified",
+            "company": {"company_name": "Shared Workspace Company"},
+            "primary_contact": {"name": "Shared Contact"},
+            "sales_enquiry": {
+                "product": "Shared product",
+                "enquiry_text": "Initial shared enquiry",
+            },
+        },
+    )
+    assert created.status_code == 201
+    result = created.json()
+    customer_id = result["customer"]["customer_id"]
+    contact_id = result["contact"]["contact_id"]
+    enquiry_id = result["sales_enquiry"]["enquiry_id"]
+
+    retrieved = unauthenticated_client.get(
+        f"/api/customers/{customer_id}",
+        headers=headers_b,
+    )
+    assert retrieved.status_code == 200
+    assert retrieved.json()["customer_name"] == "Shared Workspace Customer"
+    updated_customer = unauthenticated_client.patch(
+        f"/api/customers/{customer_id}",
+        headers=headers_b,
+        json={"status": "prospect"},
+    )
+    assert updated_customer.status_code == 200
+    assert updated_customer.json()["status"] == "prospect"
+
+    updated_enquiry = unauthenticated_client.patch(
+        f"/api/enquiries/{enquiry_id}",
+        headers=headers_b,
+        json={"product": "Updated by colleague"},
+    )
+    assert updated_enquiry.status_code == 200
+    assert updated_enquiry.json()["product"] == "Updated by colleague"
+
+    now = datetime.now(timezone.utc)
+    meeting = unauthenticated_client.post(
+        "/api/meetings",
+        headers=headers_a,
+        json={
+            "customer_id": customer_id,
+            "contact_id": contact_id,
+            "enquiry_id": enquiry_id,
+            "scheduled_at": now.isoformat(),
+            "agenda": "Shared meeting",
+        },
+    )
+    assert meeting.status_code == 201
+    meeting_id = meeting.json()["meeting_id"]
+    assert unauthenticated_client.get(
+        f"/api/meetings/{meeting_id}",
+        headers=headers_b,
+    ).status_code == 200
+    updated_meeting = unauthenticated_client.put(
+        f"/api/meetings/{meeting_id}",
+        headers=headers_b,
+        json={"agenda": "Updated by colleague"},
+    )
+    assert updated_meeting.status_code == 200
+
+    call = unauthenticated_client.post(
+        "/api/calls",
+        headers=headers_a,
+        json={
+            "customer_id": customer_id,
+            "contact_id": contact_id,
+            "enquiry_id": enquiry_id,
+            "scheduled_at": (now + timedelta(hours=2)).isoformat(),
+            "call_type": "Discovery",
+        },
+    )
+    assert call.status_code == 201
+    call_id = call.json()["call_id"]
+    assert unauthenticated_client.get(
+        f"/api/calls/{call_id}",
+        headers=headers_b,
+    ).status_code == 200
+    updated_call = unauthenticated_client.put(
+        f"/api/calls/{call_id}",
+        headers=headers_b,
+        json={"outcome": "Updated by colleague"},
+    )
+    assert updated_call.status_code == 200
+
+    followup = unauthenticated_client.post(
+        "/api/followups",
+        headers=headers_a,
+        json={
+            "customer_id": customer_id,
+            "enquiry_id": enquiry_id,
+            "meeting_id": meeting_id,
+            "call_id": call_id,
+            "type": "task",
+            "due_date": (now + timedelta(days=2)).isoformat(),
+        },
+    )
+    assert followup.status_code == 201
+    followup_id = followup.json()["followup_id"]
+    assert unauthenticated_client.get(
+        f"/api/followups/{followup_id}",
+        headers=headers_b,
+    ).status_code == 200
+    updated_followup = unauthenticated_client.put(
+        f"/api/followups/{followup_id}",
+        headers=headers_b,
+        json={"description": "Updated by colleague"},
+    )
+    assert updated_followup.status_code == 200
+
+    activity = unauthenticated_client.get(
+        f"/api/customers/{customer_id}/activity",
+        headers=headers_b,
+    )
+    assert activity.status_code == 200
+    activity_types = {item["activity_type"] for item in activity.json()["items"]}
+    assert {"enquiry", "meeting", "call", "follow_up"} <= activity_types
+    after = unauthenticated_client.get(
+        "/api/analytics/overview",
+        headers=headers_b,
+    )
+    assert after.status_code == 200
+    assert after.json()["total_customers"] == before.json()["total_customers"] + 1
+    assert after.json()["meetings_this_month"] == before.json()["meetings_this_month"] + 1
+    assert after.json()["calls_this_month"] == before.json()["calls_this_month"] + 1
+    assert after.json()["open_enquiries"] == before.json()["open_enquiries"] + 1
+    assert after.json()["pending_followups"] == before.json()["pending_followups"] + 1
+    after_enquiries = unauthenticated_client.get(
+        "/api/analytics/enquiries",
+        headers=headers_b,
+    )
+    after_followups = unauthenticated_client.get(
+        "/api/analytics/followups",
+        headers=headers_b,
+    )
+    assert after_enquiries.status_code == 200
+    before_open_enquiries = sum(
+        item["count"]
+        for item in before_enquiries.json()["by_status"]
+        if item["label"] == "open"
+    )
+    after_open_enquiries = sum(
+        item["count"]
+        for item in after_enquiries.json()["by_status"]
+        if item["label"] == "open"
+    )
+    assert after_open_enquiries == before_open_enquiries + 1
+    assert after_followups.status_code == 200
+    assert after_followups.json()["pending"] == before_followups.json()["pending"] + 1
+
+
 def test_pending_action_created_by_user_a_cannot_be_confirmed_or_cancelled_by_user_b(
     unauthenticated_client: TestClient,
     agent_sessions: sessionmaker[Session],
@@ -483,7 +762,9 @@ def test_pending_action_created_by_user_a_cannot_be_confirmed_or_cancelled_by_us
                 "create_meeting",
                 {
                     "customer_id": agent_records["customer_id"],
-                    "scheduled_at": "2026-10-10T15:00:00+04:00",
+                    "scheduled_date": "2026-10-10",
+                    "scheduled_time": "15:00",
+                    "scheduled_timezone": "Asia/Dubai",
                     "duration": 45,
                     "agenda": "User A private proposal",
                 },
@@ -744,7 +1025,9 @@ def test_global_chat_without_customer_id_discovers_customers_but_blocks_cross_en
                 {
                     "customer_id": two_customer_records["customer_2"],
                     "contact_id": two_customer_records["contact_2"],
-                    "scheduled_at": "2026-10-15T14:00:00+04:00",
+                    "scheduled_date": "2026-10-15",
+                    "scheduled_time": "14:00",
+                    "scheduled_timezone": "Asia/Dubai",
                     "agenda": "Global discovery meeting",
                 },
                 "propose-beta-meeting",

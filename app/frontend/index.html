@@ -4,8 +4,12 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="A clear workspace for customer relationships and sales activity.">
-    <title>Sales CRM | Customer relationships, clearly managed</title>
+    <title>Dashboard | SalesDesk</title>
+    <script src="/static/js/theme-init.js"></script>
     <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+    <link rel="stylesheet" href="/static/css/theme.css">
+    <script type="module" src="/static/js/dashboard.js"></script>
   </head>
   <body>
     <header class="site-header">
@@ -19,11 +23,9 @@
         <a class="nav-link" href="/customer">Customer intelligence</a>
         <a class="nav-link" href="/analytics">Analytics</a>
       </nav>
-      <span class="environment-label">Workspace</span>
-      <div class="header-auth"><a class="header-logout" href="/login">Sign in</a></div>
     </header>
 
-    <main class="home-main">
+    <main id="public-home" class="home-main">
       <section class="hero">
         <div class="hero-copy">
           <p class="eyebrow">SALES RELATIONSHIP WORKSPACE</p>
@@ -81,6 +83,74 @@
         </div>
       </section>
       <footer class="home-footer"><span>SALES<span class="brand-light">DESK</span></span><span>A focused workspace for customer relationships.</span></footer>
+    </main>
+    <main id="dashboard" class="page-shell dashboard-shell" hidden>
+      <section class="dashboard-heading">
+        <div>
+          <p class="eyebrow">YOUR SALES WORKSPACE</p>
+          <h1 id="dashboard-greeting">Welcome back</h1>
+          <p id="dashboard-date" class="dashboard-date"></p>
+        </div>
+        <a class="button button-primary" href="/customer" aria-label="Create a CRM activity">Create activity <span aria-hidden="true">→</span></a>
+      </section>
+
+      <section class="dashboard-section schedule-section" aria-labelledby="schedule-heading">
+        <div class="dashboard-section-heading">
+          <div>
+            <p class="eyebrow">SCHEDULE</p>
+            <div class="schedule-title-row">
+              <h2 id="schedule-heading">Your calendar</h2>
+              <label class="visually-hidden" for="schedule-date-picker">Jump to date</label>
+              <input id="schedule-date-picker" class="schedule-date-picker" type="date" aria-label="Jump to date">
+            </div>
+            <p id="schedule-timezone" class="dashboard-timezone"></p>
+          </div>
+          <div class="schedule-controls">
+            <button id="schedule-previous" class="icon-button" type="button" aria-label="Previous week">←</button>
+            <button id="schedule-today" class="button button-secondary" type="button">Today</button>
+            <button id="schedule-next" class="icon-button" type="button" aria-label="Next week">→</button>
+          </div>
+        </div>
+        <div class="schedule-toolbar">
+          <div id="activity-filters" class="activity-filters" role="group" aria-label="Filter activities by type">
+            <button class="activity-filter is-selected" type="button" data-activity-filter="all" aria-pressed="true">All</button>
+            <button class="activity-filter" type="button" data-activity-filter="meeting" aria-pressed="false">Meetings</button>
+            <button class="activity-filter" type="button" data-activity-filter="call" aria-pressed="false">Calls</button>
+            <button class="activity-filter" type="button" data-activity-filter="follow_up" aria-pressed="false">Follow-ups</button>
+          </div>
+          <label class="schedule-search">
+            <span aria-hidden="true">⌕</span>
+            <span class="visually-hidden">Search scheduled activities</span>
+            <input id="schedule-search" type="search" placeholder="Search schedule" autocomplete="off">
+            <kbd aria-hidden="true">/</kbd>
+          </label>
+        </div>
+        <p id="schedule-move-status" class="dashboard-message schedule-move-status" role="status" aria-live="polite"></p>
+        <p id="dashboard-loading" class="dashboard-message" role="status">Loading your schedule…</p>
+        <p id="dashboard-error" class="dashboard-message dashboard-error" role="alert" hidden></p>
+      </section>
+
+      <div class="dashboard-content">
+        <section class="dashboard-section daily-section" aria-labelledby="daily-heading">
+          <div class="dashboard-section-heading daily-heading">
+            <div>
+                <p class="eyebrow">WEEKLY OVERVIEW</p>
+                <h2 id="daily-heading">This week</h2>
+            </div>
+            <span id="daily-count" class="dashboard-count"></span>
+          </div>
+          <div id="week-board" class="week-board" aria-live="polite"></div>
+        </section>
+        <aside class="dashboard-section upcoming-section" aria-labelledby="upcoming-heading">
+          <div class="dashboard-section-heading">
+            <div>
+              <p class="eyebrow">BEYOND THIS WEEK</p>
+              <h2 id="upcoming-heading">Later &amp; overdue</h2>
+            </div>
+          </div>
+          <div id="upcoming-events" class="dashboard-events" aria-live="polite"></div>
+        </aside>
+      </div>
     </main>
   </body>
 </html>

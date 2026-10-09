@@ -5,8 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Search customers and review their company, contacts, sales enquiries, and activity.">
     <title>Customer Intelligence | SalesDesk</title>
+    <script src="/static/js/theme-init.js"></script>
     <link rel="stylesheet" href="/static/css/style.css">
     <link rel="stylesheet" href="/static/css/customer.css">
+    <link rel="stylesheet" href="/static/css/theme.css">
     <script type="module" src="/static/js/customer.js"></script>
   </head>
   <body>
@@ -40,6 +42,50 @@
         <div class="search-hint"><span class="status-dot" aria-hidden="true"></span> Search customer and company records</div>
       </section>
 
+      <section class="hitl-panel" aria-labelledby="hitl-heading">
+        <div class="hitl-panel-heading">
+          <div>
+            <p class="eyebrow">HUMAN-IN-THE-LOOP</p>
+            <h2 id="hitl-heading">Agent actions &amp; approvals</h2>
+            <p>Review persisted tasks, provide missing details, and decide whether proposed CRM actions may proceed.</p>
+          </div>
+          <div class="hitl-panel-actions">
+            <button id="refresh-hitl" class="button button-secondary" type="button">Refresh tasks</button>
+            <button id="toggle-hitl" class="button button-secondary hitl-collapse-button" type="button" aria-controls="hitl-content" aria-expanded="true">
+              <span class="hitl-collapse-label">Collapse</span>
+              <span class="hitl-collapse-icon" aria-hidden="true">⌃</span>
+            </button>
+          </div>
+        </div>
+        <div id="hitl-content" class="hitl-content">
+          <form id="create-hitl-task" class="hitl-create-form">
+            <label>
+              <span>Start a structured task</span>
+              <select id="hitl-action-type" name="action" required>
+                <option value="create_meeting">Create meeting</option>
+                <option value="create_followup">Create follow-up</option>
+                <option value="schedule_call">Schedule call</option>
+                <option value="record_call_result">Record call result</option>
+                <option value="complete_followup">Complete follow-up</option>
+                <option value="apply_enrichment">Apply CRM enrichment</option>
+              </select>
+            </label>
+            <p id="hitl-customer-context" class="hitl-context">You can choose a customer in the form after starting.</p>
+            <button id="start-hitl-task" class="button button-primary" type="submit">Start task</button>
+          </form>
+          <p id="hitl-error" class="hitl-error" role="alert" hidden></p>
+          <p id="hitl-status" class="hitl-status" aria-live="polite"></p>
+          <div id="hitl-policy-panel" class="hitl-policy-panel" hidden>
+            <div class="hitl-subheading">
+              <div><p class="eyebrow">ADMINISTRATOR</p><h3>Global action policies</h3></div>
+              <span>Policy changes are enforced by the server.</span>
+            </div>
+            <div id="hitl-policies" class="hitl-policy-list"></div>
+          </div>
+          <div id="hitl-task-list" class="hitl-task-list" aria-live="polite"></div>
+        </div>
+      </section>
+
       <div class="intelligence-layout">
         <section class="results-panel" aria-labelledby="results-heading">
           <div class="panel-heading">
@@ -68,7 +114,7 @@
           <button id="close-activity-dialog" class="dialog-close" type="button" aria-label="Close">×</button>
         </div>
         <div id="activity-fields" class="activity-fields"></div>
-        <p id="activity-form-error" class="form-alert" role="alert" hidden></p>
+        <div id="activity-form-error" class="form-alert" role="alert" hidden></div>
         <div class="dialog-actions">
           <button id="cancel-activity" class="button button-secondary" type="button">Cancel</button>
           <button id="save-activity" class="button button-primary" type="submit">Save activity</button>

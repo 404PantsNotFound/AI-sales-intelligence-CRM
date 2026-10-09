@@ -20,6 +20,7 @@ def apply_enrichment(
     enquiry_id: int | None = None,
     customer_updates: dict[str, object] | None = None,
     enquiry_updates: dict[str, object] | None = None,
+    defer_commit: bool = False,
 ) -> tuple[Customer | None, SalesEnquiry | None]:
     customer_updates = customer_updates or {}
     enquiry_updates = enquiry_updates or {}
@@ -32,7 +33,7 @@ def apply_enrichment(
         )
 
     try:
-        with atomic_transaction(db):
+        with atomic_transaction(db, commit_existing=not defer_commit):
             customer = db.get(Customer, customer_id)
 
             if customer is None:

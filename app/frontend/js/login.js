@@ -1,4 +1,5 @@
 import { getAuthToken, loginUser, registerUser } from "./api.js";
+import { mountAuthControls } from "./common.js";
 
 const form = document.querySelector("#login-form");
 const tabLogin = document.querySelector("#tab-login");
@@ -28,12 +29,13 @@ function safeNextDestination() {
   if (candidate.startsWith("/") && !candidate.startsWith("//") && !candidate.startsWith("/login")) {
     return candidate;
   }
-  return "/customer";
+  return "/";
 }
 
 if (getAuthToken()) {
   window.location.assign(safeNextDestination());
 }
+mountAuthControls();
 
 function setMessages({ error = "", notice = "" } = {}) {
   errorBox.textContent = error;

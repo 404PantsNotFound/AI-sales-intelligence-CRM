@@ -39,6 +39,7 @@ def build_sales_agent(
         tools.extend(
             build_action_proposal_tools(
                 tool_context,
+                db,
             )
         )
 

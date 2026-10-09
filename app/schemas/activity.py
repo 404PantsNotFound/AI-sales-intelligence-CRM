@@ -18,6 +18,7 @@ class ActivityResponse(BaseModel):
     activity_id: str
     activity_type: ActivityType
     activity_date: datetime
+    activity_timezone: str | None = None
     status: str
     title: str
     description: str | None = None
@@ -69,4 +70,3 @@ class ActivityFilter(BaseModel):
         if self.start_date and self.end_date and self.start_date > self.end_date:
             raise ValueError("start_date must be on or before end_date")
         return self
-

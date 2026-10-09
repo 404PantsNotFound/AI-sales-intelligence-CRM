@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     agent_recursion_limit: int = Field(default=12, ge=2, le=100)
     agent_action_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     pending_action_max_capacity: int = Field(default=250, ge=1, le=10000)
+    scheduling_meeting_default_duration_minutes: int = Field(default=60, ge=1, le=1440)
+    scheduling_call_default_duration_minutes: int = Field(default=30, ge=1, le=1440)
+    scheduling_followup_default_duration_minutes: int = Field(default=15, ge=1, le=1440)
+    scheduling_business_start_hour: int = Field(default=9, ge=0, le=23)
+    scheduling_business_end_hour: int = Field(default=17, ge=1, le=24)
+    scheduling_increment_minutes: int = Field(default=15, ge=1, le=120)
+    scheduling_suggestion_count: int = Field(default=5, ge=1, le=5)
+    scheduling_horizon_days: int = Field(default=14, ge=1, le=90)
     ai_rate_limit_requests: int = Field(default=20, ge=1, le=1000)
     ai_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
     jwt_secret_key: SecretStr = SecretStr("")
@@ -46,6 +54,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_security(self) -> "Settings":
+        if self.scheduling_business_start_hour >= self.scheduling_business_end_hour:
+            raise ValueError("Scheduling business start must be before business end.")
         if self.environment.strip().lower() == "production":
             if len(self.jwt_secret_key.get_secret_value().strip()) < 32:
                 raise ValueError(

@@ -61,6 +61,12 @@ class Company(Base):
     customers: Mapped[list["Customer"]] = relationship(back_populates="company")
 
 
+class SchedulingLock(Base):
+    __tablename__ = "scheduling_locks"
+
+    lock_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+
 class Customer(Base):
     __tablename__ = "customers"
     __table_args__ = (
@@ -171,6 +177,9 @@ class Meeting(Base):
         ForeignKey("sales_enquiries.enquiry_id", ondelete="SET NULL"), index=True
     )
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    scheduled_timezone: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="UTC", server_default="UTC"
+    )
     duration: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="scheduled", index=True)
     agenda: Mapped[str | None] = mapped_column(Text)
@@ -212,6 +221,10 @@ class Call(Base):
     call_type: Mapped[str | None] = mapped_column(String(50))
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     actual_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    scheduled_timezone: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="UTC", server_default="UTC"
+    )
+    duration: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="scheduled", index=True)
     outcome: Mapped[str | None] = mapped_column(String(100))
     notes: Mapped[str | None] = mapped_column(Text)
@@ -251,6 +264,10 @@ class FollowUp(Base):
     )
     type: Mapped[str] = mapped_column(String(50), nullable=False)
     due_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    due_timezone: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="UTC", server_default="UTC"
+    )
+    duration: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending", index=True)
     description: Mapped[str | None] = mapped_column(Text)
     assigned_to: Mapped[str | None] = mapped_column(String(255))

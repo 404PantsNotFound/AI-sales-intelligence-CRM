@@ -21,6 +21,7 @@ from app.models import (
     FollowUp,
     Meeting,
     SalesEnquiry,
+    SchedulingLock,
     User,
 )
 
@@ -77,6 +78,9 @@ def agent_engine() -> Generator[Engine, None, None]:
         poolclass=StaticPool,
     )
     Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(SchedulingLock(lock_id=1))
+        db.commit()
     yield engine
     Base.metadata.drop_all(engine)
     engine.dispose()

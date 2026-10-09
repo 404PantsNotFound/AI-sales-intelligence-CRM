@@ -5,8 +5,18 @@ from app.models.crm import (
     Customer,
     FollowUp,
     Meeting,
+    SchedulingLock,
     SalesEnquiry,
     User,
+)
+from app.models.hitl import (
+    HitlActionAudit,
+    HitlActionProposal,
+    HitlApprovalDecision,
+    HitlExecutionAudit,
+    HitlPolicyAudit,
+    HitlPolicyOverride,
+    HitlTask,
 )
 
 __all__ = [
@@ -16,7 +26,14 @@ __all__ = [
     "Customer",
     "FollowUp",
     "Meeting",
+    "SchedulingLock",
     "SalesEnquiry",
     "User",
+    "HitlActionAudit",
+    "HitlActionProposal",
+    "HitlApprovalDecision",
+    "HitlExecutionAudit",
+    "HitlPolicyAudit",
+    "HitlPolicyOverride",
+    "HitlTask",
 ]
-

@@ -2,23 +2,25 @@
 
 :root {
   font-family: "DM Sans", "Segoe UI", sans-serif;
-  color: #192a3a;
-  background: #f6f8fb;
+  color: #202b3c;
+  background: #f5f7fa;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --ink: #192a3a;
-  --muted: #728092;
-  --line: #e5eaf0;
-  --blue: #2367d1;
-  --blue-dark: #1855b4;
-  --pale-blue: #eef5ff;
-  --green: #188469;
-  --card: #fff;
+  --ink: #202b3c;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --blue: #0f766e;
+  --blue-dark: #0b625c;
+  --pale-blue: #e8f5f2;
+  --green: #167764;
+  --card: #ffffff;
+  --page: #f5f7fa;
+  --surface-elevated: #ffffff;
   --shadow: 0 12px 34px rgb(31 51 73 / 6%);
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; background: #f6f8fb; }
+body { margin: 0; min-width: 320px; color: var(--ink); background: var(--page); }
 a { color: inherit; text-decoration: none; }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
@@ -107,6 +109,8 @@ button { cursor: pointer; }
 .auth-notice { margin: 14px 0 0; padding: 12px 14px; border-radius: 7px; color: var(--green); background: #eaf7f3; font-size: 12px; font-weight: 600; }
 .auth-session-note { color: var(--muted); font-size: 11px; }
 
+:focus-visible { outline: 3px solid #5cc8b2; outline-offset: 3px; }
+
 @media (max-width: 760px) {
   .site-header { height: auto; min-height: 68px; flex-wrap: wrap; gap: 0; padding: 15px 20px 0; }
   .brand { margin-bottom: 14px; }
@@ -135,4 +139,3 @@ button { cursor: pointer; }
   .page-shell { padding: 30px 17px 52px; }
   .page-intro h1 { font-size: 27px; }
 }
-

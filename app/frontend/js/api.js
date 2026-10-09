@@ -173,12 +173,44 @@ export function getCustomerActivity(customerId, params = {}) {
   return request(`/customers/${encodeURIComponent(customerId)}/activity${suffix}`);
 }
 
+export function getWorkspaceActivities(startAt, endAt) {
+  const query = new URLSearchParams({
+    start_at: startAt,
+    end_at: endAt,
+  });
+  return request(`/scheduling/activities?${query.toString()}`);
+}
+
+export function moveWorkspaceActivity(activityType, activityId, targetDate, targetTimezone) {
+  return request(
+    `/scheduling/activities/${encodeURIComponent(activityType)}/${encodeURIComponent(activityId)}/move`,
+    {
+      method: "POST",
+      body: JSON.stringify({ target_date: targetDate, target_timezone: targetTimezone }),
+    },
+  );
+}
+
 export function createMeeting(payload) {
   return request("/meetings", { method: "POST", body: JSON.stringify(payload) });
 }
 
+export function updateMeeting(meetingId, payload) {
+  return request(`/meetings/${encodeURIComponent(meetingId)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function createCall(payload) {
   return request("/calls", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function updateCall(callId, payload) {
+  return request(`/calls/${encodeURIComponent(callId)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function createFollowup(payload) {
@@ -188,6 +220,13 @@ export function createFollowup(payload) {
 export function updateFollowup(followupId, payload) {
   return request(`/followups/${encodeURIComponent(followupId)}`, {
     method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function checkSchedulingAvailability(payload) {
+  return request("/scheduling/availability", {
+    method: "POST",
     body: JSON.stringify(payload),
   });
 }
@@ -216,6 +255,7 @@ export function chatWithAgent(message, customerId = null) {
     method: "POST",
     body: JSON.stringify({
       message,
+      timezone_name: Intl.DateTimeFormat().resolvedOptions().timeZone,
       ...(customerId === null ? {} : { customer_id: customerId }),
     }),
   });
@@ -230,6 +270,51 @@ export function confirmAgentAction(actionId) {
 export function cancelAgentAction(actionId) {
   return request(`/agent/actions/${encodeURIComponent(actionId)}/cancel`, {
     method: "POST",
+  });
+}
+
+export function rejectAgentAction(actionId) {
+  return request(`/agent/actions/${encodeURIComponent(actionId)}/reject`, {
+    method: "POST",
+  });
+}
+
+export function createAgentTask(operations) {
+  return request("/agent/tasks", {
+    method: "POST",
+    body: JSON.stringify({ operations }),
+  });
+}
+
+export function getAgentTasks() {
+  return request("/agent/tasks");
+}
+
+export function resumeAgentTask(taskId) {
+  return request(`/agent/tasks/${encodeURIComponent(taskId)}`);
+}
+
+export function submitAgentTaskInput(taskId, operationIndex, values) {
+  return request(`/agent/tasks/${encodeURIComponent(taskId)}/inputs`, {
+    method: "POST",
+    body: JSON.stringify({ operation_index: operationIndex, values }),
+  });
+}
+
+export function cancelAgentTask(taskId) {
+  return request(`/agent/tasks/${encodeURIComponent(taskId)}/cancel`, {
+    method: "POST",
+  });
+}
+
+export function getAgentPolicies() {
+  return request("/agent/policies");
+}
+
+export function updateAgentPolicy(action, mode) {
+  return request(`/agent/policies/${encodeURIComponent(action)}`, {
+    method: "PUT",
+    body: JSON.stringify({ action, mode }),
   });
 }
 

@@ -13,7 +13,16 @@ from sqlalchemy.pool import StaticPool
 
 from app.database.connection import Base, get_db
 from app.main import app
-from app.models import Company, Contact, Customer, SalesEnquiry
+from app.models import (
+    Call,
+    Company,
+    Contact,
+    Customer,
+    FollowUp,
+    Meeting,
+    SalesEnquiry,
+    SchedulingLock,
+)
 from app.services.import_service import EXPECTED_SHEETS
 from tests.conftest import authorize_test_client
 
@@ -33,6 +42,9 @@ def test_engine() -> Generator[Engine, None, None]:
         cursor.close()
 
     Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(SchedulingLock(lock_id=1))
+        db.commit()
     yield engine
     Base.metadata.drop_all(engine)
     engine.dispose()
@@ -85,7 +97,22 @@ def valid_registration(**overrides: Any) -> dict[str, Any]:
     return data
 
 
-def imported_workbook(*, priority: str = "medium") -> bytes:
+def imported_workbook(
+    *,
+    priority: str = "medium",
+    scheduled_at: Any = "2026-10-02T10:00:00+04:00",
+    scheduled_timezone: str | None = "Asia/Dubai",
+    meeting_duration: Any = 30,
+    call_scheduled_at: Any = datetime(2026, 10, 3),
+    call_scheduled_timezone: str | None = None,
+    call_time_occurrence: str | None = None,
+    followup_due_date: Any = datetime(2026, 10, 4),
+    followup_due_timezone: str | None = None,
+    followup_time_occurrence: str | None = None,
+    include_second_customer: bool = False,
+    foreign_reference: tuple[str, str] | None = None,
+    second_meeting_scheduled_at: Any = "2026-10-02T11:00:00+04:00",
+) -> bytes:
     workbook = Workbook()
     sheets = {
         "Companies": (
@@ -105,16 +132,16 @@ def imported_workbook(*, priority: str = "medium") -> bytes:
             (1, 1, "CRM", "Interested in a subscription.", priority, "open", None, datetime(2026, 10, 1)),
         ),
         "Meetings": (
-            ("meeting_id", "customer_id", "contact_id", "enquiry_id", "scheduled_at", "duration", "status", "agenda", "notes", "summary"),
-            (1, 1, 1, 1, datetime(2026, 10, 2), 30, "scheduled", "Introduction", None, None),
+            ("meeting_id", "customer_id", "contact_id", "enquiry_id", "scheduled_at", "duration", "status", "agenda", "notes", "summary", "scheduled_timezone"),
+            (1, 1, 1, 1, scheduled_at, meeting_duration, "scheduled", "Introduction", None, None, scheduled_timezone),
         ),
         "Calls": (
-            ("call_id", "customer_id", "contact_id", "enquiry_id", "call_type", "scheduled_at", "actual_time", "status", "outcome", "notes", "summary", "next_followup_date"),
-            (1, 1, 1, 1, "Discovery", datetime(2026, 10, 3), None, "missed", None, None, None, None),
+            ("call_id", "customer_id", "contact_id", "enquiry_id", "call_type", "scheduled_at", "actual_time", "status", "outcome", "notes", "summary", "next_followup_date", "scheduled_timezone", "scheduled_time_occurrence"),
+            (1, 1, 1, 1, "Discovery", call_scheduled_at, None, "missed", None, None, None, None, call_scheduled_timezone, call_time_occurrence),
         ),
         "Follow_Ups": (
-            ("followup_id", "customer_id", "enquiry_id", "meeting_id", "call_id", "type", "due_date", "status", "description", "assigned_to", "completed_at"),
-            (1, 1, 1, 1, 1, "email", datetime(2026, 10, 4), "pending", None, None, None),
+            ("followup_id", "customer_id", "enquiry_id", "meeting_id", "call_id", "type", "due_date", "status", "description", "assigned_to", "completed_at", "due_timezone", "due_time_occurrence"),
+            (1, 1, 1, 1, 1, "email", followup_due_date, "pending", None, None, None, followup_due_timezone, followup_time_occurrence),
         ),
     }
 
@@ -125,6 +152,23 @@ def imported_workbook(*, priority: str = "medium") -> bytes:
             headers, row = sheets[sheet_name]
             worksheet.append(headers)
             worksheet.append(row)
+            if include_second_customer:
+                second_rows = {
+                    "Companies": (2, "Independent Company", None, None, None, None, None, None, None),
+                    "Customers": (2, 2, "Independent Customer", "prospect", "new"),
+                    "Contacts": (2, 2, "Independent Contact", None, None, None, False),
+                    "Sales_Enquiries": (2, 2, "CRM", "Independent enquiry.", "normal", "open", None, datetime(2026, 10, 1)),
+                    "Meetings": (2, 2, 2, 2, second_meeting_scheduled_at, 30, "scheduled", "Independent meeting", None, None, "Asia/Dubai"),
+                    "Calls": (2, 2, 2, 2, "Discovery", datetime(2026, 10, 3), None, "missed", None, None, None, None, None, None),
+                }
+                if sheet_name in second_rows:
+                    worksheet.append(second_rows[sheet_name])
+            if foreign_reference is not None and foreign_reference[0] == sheet_name:
+                worksheet.cell(
+                    row=2,
+                    column=headers.index(foreign_reference[1]) + 1,
+                    value=2,
+                )
 
     output = BytesIO()
     workbook.save(output)
@@ -291,7 +335,10 @@ def test_get_missing_customer_returns_404(client: TestClient) -> None:
     assert response.json()["error"]["code"] == "customer_not_found"
 
 
-def test_imported_medium_priority_loads_in_customer_overview(client: TestClient) -> None:
+def test_imported_medium_priority_loads_in_customer_overview(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
     upload = client.post(
         "/api/import",
         files={
@@ -309,6 +356,174 @@ def test_imported_medium_priority_loads_in_customer_overview(client: TestClient)
     assert overview.status_code == 200
     assert overview.json()["sales_enquiries"][0]["priority"] == "medium"
     assert overview.json()["calls"][0]["status"] == "missed"
+    assert overview.json()["meetings"][0]["scheduled_at"] == "2026-10-02T10:00:00+04:00"
+    assert overview.json()["meetings"][0]["scheduled_timezone"] == "Asia/Dubai"
+    with test_session_factory() as db:
+        meeting = db.get(Meeting, 1)
+        assert meeting is not None
+        assert meeting.scheduled_at == datetime(2026, 10, 2, 6, 0)
+        assert meeting.scheduled_timezone == "Asia/Dubai"
+
+
+def test_import_local_call_and_followup_times_preserve_timezone(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    upload = client.post(
+        "/api/import",
+        files={
+            "file": (
+                "crm.xlsx",
+                imported_workbook(
+                    call_scheduled_at=datetime(2030, 1, 10, 9),
+                    call_scheduled_timezone="Asia/Dubai",
+                    followup_due_date=datetime(2030, 1, 11, 10),
+                    followup_due_timezone="Asia/Dubai",
+                ),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert upload.status_code == 200
+    with test_session_factory() as db:
+        call = db.get(Call, 1)
+        followup = db.get(FollowUp, 1)
+        assert call is not None
+        assert call.scheduled_at == datetime(2030, 1, 10, 5)
+        assert call.scheduled_timezone == "Asia/Dubai"
+        assert followup is not None
+        assert followup.due_date == datetime(2030, 1, 11, 6)
+        assert followup.due_timezone == "Asia/Dubai"
+
+
+@pytest.mark.parametrize(
+    ("call_scheduled_at", "occurrence"),
+    [
+        (datetime(2030, 3, 10, 2, 30), None),
+        (datetime(2030, 11, 3, 1, 30), None),
+    ],
+)
+def test_import_rejects_nonexistent_or_ambiguous_local_call_time(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+    call_scheduled_at: datetime,
+    occurrence: str | None,
+) -> None:
+    response = client.post(
+        "/api/import",
+        files={
+            "file": (
+                "crm.xlsx",
+                imported_workbook(
+                    call_scheduled_at=call_scheduled_at,
+                    call_scheduled_timezone="America/New_York",
+                    call_time_occurrence=occurrence,
+                ),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_import"
+    assert "Calls record 1" in response.json()["error"]["message"]
+    with test_session_factory() as db:
+        assert db.scalar(select(func.count()).select_from(Company)) == 0
+
+
+def test_import_accepts_explicit_ambiguous_local_call_occurrence(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    upload = client.post(
+        "/api/import",
+        files={
+            "file": (
+                "crm.xlsx",
+                imported_workbook(
+                    call_scheduled_at=datetime(2030, 11, 3, 1, 30),
+                    call_scheduled_timezone="America/New_York",
+                    call_time_occurrence="later",
+                ),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert upload.status_code == 200
+    with test_session_factory() as db:
+        call = db.get(Call, 1)
+        assert call is not None
+        assert call.scheduled_at == datetime(2030, 11, 3, 6, 30)
+        assert call.scheduled_timezone == "America/New_York"
+
+
+@pytest.mark.parametrize(
+    "scheduled_at",
+    ["2026-10-02", "2026-10-02T10:00:00"],
+)
+def test_import_rejects_meeting_timestamps_without_timezone(
+    client: TestClient,
+    scheduled_at: str,
+) -> None:
+    response = client.post(
+        "/api/import",
+        files={
+            "file": (
+                "crm.xlsx",
+                imported_workbook(scheduled_at=scheduled_at, scheduled_timezone=None),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_import"
+
+
+def test_import_rejects_zero_meeting_duration(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    response = client.post(
+        "/api/import",
+        files={
+            "file": (
+                "crm.xlsx",
+                imported_workbook(meeting_duration=0),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert response.status_code == 422
+    assert "Meetings record 1 has an invalid duration" in response.json()["error"]["message"]
+    with test_session_factory() as db:
+        assert db.scalar(select(func.count()).select_from(Company)) == 0
+
+
+def test_import_schedule_conflict_rolls_back_the_entire_workbook(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    response = client.post(
+        "/api/import",
+        files={
+            "file": (
+                "crm.xlsx",
+                imported_workbook(
+                    include_second_customer=True,
+                    second_meeting_scheduled_at="2026-10-02T10:00:00+04:00",
+                ),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "schedule_conflict"
+    with test_session_factory() as db:
+        for model in (Company, Customer, Contact, SalesEnquiry, Meeting, Call, FollowUp):
+            assert db.scalar(select(func.count()).select_from(model)) == 0
 
 
 def test_import_rejects_unknown_enquiry_priority(client: TestClient) -> None:
@@ -325,6 +540,73 @@ def test_import_rejects_unknown_enquiry_priority(client: TestClient) -> None:
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "invalid_import"
+
+
+@pytest.mark.parametrize(
+    ("sheet_name", "field"),
+    [
+        ("Meetings", "contact_id"),
+        ("Meetings", "enquiry_id"),
+        ("Calls", "contact_id"),
+        ("Calls", "enquiry_id"),
+        ("Follow_Ups", "enquiry_id"),
+        ("Follow_Ups", "meeting_id"),
+        ("Follow_Ups", "call_id"),
+    ],
+)
+def test_import_rejects_cross_customer_relationships_atomically(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+    sheet_name: str,
+    field: str,
+) -> None:
+    response = client.post(
+        "/api/import",
+        files={
+            "file": (
+                "crm.xlsx",
+                imported_workbook(
+                    include_second_customer=True,
+                    foreign_reference=(sheet_name, field),
+                ),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_import"
+    assert f"{sheet_name} row 2" in response.json()["error"]["message"]
+    with test_session_factory() as db:
+        for model in (Company, Customer, Contact, SalesEnquiry, Meeting, Call, FollowUp):
+            assert db.scalar(select(func.count()).select_from(model)) == 0
+
+
+def test_import_accepts_independent_records_for_multiple_customers(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    response = client.post(
+        "/api/import",
+        files={
+            "file": (
+                "crm.xlsx",
+                imported_workbook(include_second_customer=True),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    with test_session_factory() as db:
+        customers = list(db.scalars(select(Customer).order_by(Customer.customer_id)))
+        contacts = list(db.scalars(select(Contact).order_by(Contact.contact_id)))
+        enquiries = list(
+            db.scalars(select(SalesEnquiry).order_by(SalesEnquiry.enquiry_id))
+        )
+        assert [customer.customer_id for customer in customers] == [1, 2]
+        assert [contact.customer_id for contact in contacts] == [1, 2]
+        assert [enquiry.customer_id for enquiry in enquiries] == [1, 2]
 
 
 def test_list_customers_returns_paginated_shape(client: TestClient) -> None:

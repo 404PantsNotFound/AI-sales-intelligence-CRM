@@ -16,6 +16,7 @@ from app.api.routes import (
     enquiries,
     followups,
     meetings,
+    scheduling,
     imports,
 )
 from app.core.config import Settings, settings
@@ -96,6 +97,7 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         contacts.customer_router,
         meetings.router,
         meetings.customer_router,
+        scheduling.router,
         calls.router,
         calls.customer_router,
         followups.router,
@@ -112,5 +114,4 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
 
 
 app = create_app()
-
 

@@ -1,11 +1,28 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import inspect
 from sqlalchemy.orm import configure_mappers
 
 from app.database.connection import Base
-from app.models import Call, Company, Contact, Customer, FollowUp, Meeting, SalesEnquiry, User
+from app.models import (
+    Call,
+    Company,
+    Contact,
+    Customer,
+    FollowUp,
+    HitlActionAudit,
+    HitlActionProposal,
+    HitlApprovalDecision,
+    HitlExecutionAudit,
+    HitlPolicyAudit,
+    HitlPolicyOverride,
+    HitlTask,
+    Meeting,
+    SalesEnquiry,
+    SchedulingLock,
+    User,
+)
 from app.schemas import (
     CallCreate,
     CallResponse,
@@ -48,17 +65,48 @@ def test_all_models_register_expected_tables() -> None:
         },
         "meetings": {
             "meeting_id", "customer_id", "contact_id", "enquiry_id", "scheduled_at",
-            "duration", "status", "agenda", "notes", "summary", "created_at", "updated_at",
+            "scheduled_timezone", "duration", "status", "agenda", "notes", "summary",
+            "created_at", "updated_at",
         },
         "calls": {
             "call_id", "customer_id", "contact_id", "enquiry_id", "call_type", "scheduled_at",
             "actual_time", "status", "outcome", "notes", "summary", "next_followup_date",
-            "created_at", "updated_at",
+            "scheduled_timezone", "duration", "created_at", "updated_at",
         },
         "follow_ups": {
             "followup_id", "customer_id", "enquiry_id", "meeting_id", "call_id", "type",
             "due_date", "status", "description", "assigned_to", "completed_at", "created_at",
-            "updated_at",
+            "due_timezone", "duration", "updated_at",
+        },
+        "scheduling_locks": {
+            "lock_id",
+        },
+        "hitl_tasks": {
+            "task_id", "owner_user_id", "action_type", "collected_data",
+            "cancelled_by_user_id", "cancelled_at", "status", "created_at",
+            "updated_at", "expires_at",
+        },
+        "hitl_action_proposals": {
+            "action_id", "task_id", "owner_user_id", "action_type", "parameters",
+            "payload_fingerprint", "status", "approved_by_user_id", "approved_at",
+            "created_at", "updated_at", "expires_at",
+        },
+        "hitl_approval_decisions": {
+            "decision_id", "action_id", "decided_by_user_id", "decision", "decided_at",
+        },
+        "hitl_execution_audits": {
+            "execution_id", "action_id", "initiated_by_user_id", "status", "result_record_id",
+            "error_code", "result_message", "started_at", "completed_at",
+        },
+        "hitl_policy_overrides": {
+            "action_type", "mode", "updated_by_user_id", "updated_at",
+        },
+        "hitl_policy_audits": {
+            "audit_id", "action_type", "previous_mode", "new_mode", "changed_by_user_id",
+            "changed_at",
+        },
+        "hitl_action_audits": {
+            "audit_id", "action_id", "actor_user_id", "event_type", "details", "created_at",
         },
     }
 
@@ -66,7 +114,10 @@ def test_all_models_register_expected_tables() -> None:
     for table_name, columns in expected_columns.items():
         assert set(Base.metadata.tables[table_name].columns.keys()) == columns
     assert all(model.__table__ in Base.metadata.sorted_tables for model in (
-        User, Company, Customer, Contact, SalesEnquiry, Meeting, Call, FollowUp
+        User, Company, Customer, Contact, SalesEnquiry, Meeting, Call, FollowUp,
+        HitlTask, HitlActionProposal, HitlApprovalDecision, HitlExecutionAudit,
+        HitlPolicyOverride, HitlPolicyAudit, HitlActionAudit,
+        SchedulingLock,
     ))
 
 
@@ -125,7 +176,13 @@ def test_create_schemas_validate_representative_data() -> None:
         estimated_value=Decimal("1250.50"),
     )
     assert enquiry.estimated_value == Decimal("1250.50")
-    assert MeetingCreate(customer_id=1, scheduled_at=now).enquiry_id is None
+    assert (
+        MeetingCreate(
+            customer_id=1,
+            scheduled_at=now.replace(tzinfo=timezone.utc),
+        ).enquiry_id
+        is None
+    )
     assert CallCreate(customer_id=1, actual_time=now).status == "scheduled"
     followup = FollowUpCreate(customer_id=1, type="email", due_date=now)
     assert followup.meeting_id is None
