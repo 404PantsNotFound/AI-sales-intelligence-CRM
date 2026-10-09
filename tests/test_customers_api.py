@@ -1,8 +1,11 @@
+from datetime import datetime
 from collections.abc import Generator
+from io import BytesIO
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
 from sqlalchemy import Engine, create_engine, event, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
@@ -11,6 +14,7 @@ from sqlalchemy.pool import StaticPool
 from app.database.connection import Base, get_db
 from app.main import app
 from app.models import Company, Contact, Customer, SalesEnquiry
+from app.services.import_service import EXPECTED_SHEETS
 from tests.conftest import authorize_test_client
 
 
@@ -79,6 +83,52 @@ def valid_registration(**overrides: Any) -> dict[str, Any]:
     for key, value in overrides.items():
         data[key] = value
     return data
+
+
+def imported_workbook(*, priority: str = "medium") -> bytes:
+    workbook = Workbook()
+    sheets = {
+        "Companies": (
+            ("company_id", "company_name", "industry", "website", "address", "city", "country", "company_size", "description"),
+            (1, "Imported Company", None, None, None, None, None, None, None),
+        ),
+        "Customers": (
+            ("customer_id", "company_id", "customer_name", "status", "sales_stage"),
+            (1, 1, "Imported Customer", "prospect", "qualified"),
+        ),
+        "Contacts": (
+            ("contact_id", "customer_id", "name", "job_title", "email", "phone", "is_primary"),
+            (1, 1, "Imported Contact", None, None, None, True),
+        ),
+        "Sales_Enquiries": (
+            ("enquiry_id", "customer_id", "product", "enquiry_text", "priority", "status", "estimated_value", "created_at"),
+            (1, 1, "CRM", "Interested in a subscription.", priority, "open", None, datetime(2026, 10, 1)),
+        ),
+        "Meetings": (
+            ("meeting_id", "customer_id", "contact_id", "enquiry_id", "scheduled_at", "duration", "status", "agenda", "notes", "summary"),
+            (1, 1, 1, 1, datetime(2026, 10, 2), 30, "scheduled", "Introduction", None, None),
+        ),
+        "Calls": (
+            ("call_id", "customer_id", "contact_id", "enquiry_id", "call_type", "scheduled_at", "actual_time", "status", "outcome", "notes", "summary", "next_followup_date"),
+            (1, 1, 1, 1, "Discovery", datetime(2026, 10, 3), None, "missed", None, None, None, None),
+        ),
+        "Follow_Ups": (
+            ("followup_id", "customer_id", "enquiry_id", "meeting_id", "call_id", "type", "due_date", "status", "description", "assigned_to", "completed_at"),
+            (1, 1, 1, 1, 1, "email", datetime(2026, 10, 4), "pending", None, None, None),
+        ),
+    }
+
+    for sheet_name in EXPECTED_SHEETS:
+        worksheet = workbook.active if sheet_name == "Companies" else workbook.create_sheet(sheet_name)
+        worksheet.title = sheet_name
+        if sheet_name in sheets:
+            headers, row = sheets[sheet_name]
+            worksheet.append(headers)
+            worksheet.append(row)
+
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
 
 
 def test_valid_customer_registration_creates_all_records(
@@ -239,6 +289,42 @@ def test_get_missing_customer_returns_404(client: TestClient) -> None:
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "customer_not_found"
+
+
+def test_imported_medium_priority_loads_in_customer_overview(client: TestClient) -> None:
+    upload = client.post(
+        "/api/import",
+        files={
+            "file": (
+                "crm.xlsx",
+                imported_workbook(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert upload.status_code == 200
+    overview = client.get("/api/customers/1/overview")
+
+    assert overview.status_code == 200
+    assert overview.json()["sales_enquiries"][0]["priority"] == "medium"
+    assert overview.json()["calls"][0]["status"] == "missed"
+
+
+def test_import_rejects_unknown_enquiry_priority(client: TestClient) -> None:
+    response = client.post(
+        "/api/import",
+        files={
+            "file": (
+                "crm.xlsx",
+                imported_workbook(priority="critical"),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_import"
 
 
 def test_list_customers_returns_paginated_shape(client: TestClient) -> None:

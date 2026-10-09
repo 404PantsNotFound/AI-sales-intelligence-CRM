@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from app.schemas.follow_up import FollowUpStatus
 from app.schemas.meeting import MeetingStatus
+from app.schemas.sales_enquiry import EnquiryPriority
 from app.schemas.validators import MAX_TEXT_LENGTH, normalize_utc_datetime
 
 
@@ -98,11 +99,7 @@ class ApplyEnrichmentProposal(BaseModel):
         min_length=1,
         max_length=50,
     )
-    enquiry_priority: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=50,
-    )
+    enquiry_priority: EnquiryPriority | None = None
     enquiry_status: str | None = Field(
         default=None,
         min_length=1,

@@ -43,6 +43,7 @@ class CRMEnrichmentResult(BaseModel):
 
     enquiry_priority: Literal[
         "low",
+        "medium",
         "normal",
         "high",
         "urgent",

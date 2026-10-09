@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import Engine, create_engine, event, text, update
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -441,6 +441,53 @@ def test_activity_timeline_empty_date_validation_and_overview(
     assert len(overview.json()["calls"]) == 1
     assert len(overview.json()["followups"]) == 1
     assert len(overview.json()["activity"]["items"]) == 4
+
+
+def test_customer_overview_serializes_imported_medium_priority_and_missed_call(
+    activity_client: TestClient,
+    activity_sessions: sessionmaker[Session],
+    activity_records: dict[str, int],
+) -> None:
+    with activity_sessions() as db:
+        enquiry = db.get(SalesEnquiry, activity_records["enquiry"])
+        call = db.get(Call, activity_records["call"])
+        assert enquiry is not None
+        assert call is not None
+        enquiry.priority = "medium"
+        call.status = "missed"
+        db.commit()
+
+    response = activity_client.get(
+        f"/api/customers/{activity_records['customer']}/overview"
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["sales_enquiries"][0]["priority"] == "medium"
+    assert result["calls"][0]["status"] == "missed"
+
+
+def test_customer_overview_returns_explicit_error_for_invalid_stored_priority(
+    activity_client: TestClient,
+    activity_sessions: sessionmaker[Session],
+    activity_records: dict[str, int],
+) -> None:
+    with activity_sessions() as db:
+        db.execute(text("PRAGMA ignore_check_constraints = ON"))
+        db.execute(
+            update(SalesEnquiry)
+            .where(SalesEnquiry.enquiry_id == activity_records["enquiry"])
+            .values(priority="critical")
+        )
+        db.commit()
+
+    response = activity_client.get(
+        f"/api/customers/{activity_records['customer']}/overview"
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "data_integrity_error"
+    assert "do not match the API schema" in response.json()["error"]["message"]
 
 
 def test_customer_activity_subresources_return_not_found(

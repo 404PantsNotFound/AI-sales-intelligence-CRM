@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
-from typing import Any
+from typing import Any, get_args
 
 from openpyxl import load_workbook
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -21,6 +21,11 @@ from app.models import (
     Meeting,
     SalesEnquiry,
 )
+from app.schemas.call import CallStatus
+from app.schemas.customer import CustomerStatus, SalesStage
+from app.schemas.follow_up import FollowUpStatus
+from app.schemas.meeting import MeetingStatus
+from app.schemas.sales_enquiry import EnquiryPriority, EnquiryStatus
 
 import logging
 
@@ -84,6 +89,23 @@ def _require_columns(
             status_code=422,
             code="invalid_import",
         )
+
+
+def _validate_enum_values(
+    rows: list[dict[str, Any]],
+    sheet_name: str,
+    record_id: str,
+    field: str,
+    allowed_values: tuple[str, ...],
+) -> None:
+    for row in rows:
+        if row[field] not in allowed_values:
+            raise APIError(
+                f"{sheet_name} record {row[record_id]} has an invalid {field}. "
+                f"Expected one of: {', '.join(allowed_values)}.",
+                status_code=422,
+                code="invalid_import",
+            )
 
 
 def _datetime(value: Any) -> datetime | None:
@@ -277,6 +299,17 @@ def import_crm_workbook(
             "completed_at",
         },
     )
+
+    for rows, sheet, record_id, field, values in (
+        (customers, "Customers", "customer_id", "status", get_args(CustomerStatus)),
+        (customers, "Customers", "customer_id", "sales_stage", get_args(SalesStage)),
+        (enquiries, "Sales_Enquiries", "enquiry_id", "priority", get_args(EnquiryPriority)),
+        (enquiries, "Sales_Enquiries", "enquiry_id", "status", get_args(EnquiryStatus)),
+        (meetings, "Meetings", "meeting_id", "status", get_args(MeetingStatus)),
+        (calls, "Calls", "call_id", "status", get_args(CallStatus)),
+        (followups, "Follow_Ups", "followup_id", "status", get_args(FollowUpStatus)),
+    ):
+        _validate_enum_values(rows, sheet, record_id, field, values)
 
     # ---------------------------------------------------------
     # Validate all relationships before inserting anything.

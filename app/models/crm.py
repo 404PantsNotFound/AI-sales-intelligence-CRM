@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -123,6 +124,14 @@ class SalesEnquiry(Base):
     __tablename__ = "sales_enquiries"
     __table_args__ = (
         Index("ix_sales_enquiries_customer_created_at", "customer_id", "created_at"),
+        CheckConstraint(
+            "priority IN ('low', 'medium', 'normal', 'high', 'urgent')",
+            name="ck_sales_enquiries_priority",
+        ),
+        CheckConstraint(
+            "status IN ('open', 'in_progress', 'converted', 'closed', 'lost')",
+            name="ck_sales_enquiries_status",
+        ),
     )
 
     enquiry_id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -182,7 +191,13 @@ class Meeting(Base):
 
 class Call(Base):
     __tablename__ = "calls"
-    __table_args__ = (Index("ix_calls_customer_scheduled_at", "customer_id", "scheduled_at"),)
+    __table_args__ = (
+        Index("ix_calls_customer_scheduled_at", "customer_id", "scheduled_at"),
+        CheckConstraint(
+            "status IN ('scheduled', 'attempted', 'completed', 'failed', 'cancelled', 'missed')",
+            name="ck_calls_status",
+        ),
+    )
 
     call_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     customer_id: Mapped[int] = mapped_column(

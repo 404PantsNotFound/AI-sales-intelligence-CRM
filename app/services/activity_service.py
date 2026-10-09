@@ -1,6 +1,8 @@
 from datetime import date, datetime, timezone
 import logging
+from typing import NoReturn
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -24,6 +26,24 @@ from app.schemas.sales_enquiry import SalesEnquiryResponse
 from app.services.activity_validation import require_customer
 
 logger = logging.getLogger(__name__)
+
+
+def _raise_invalid_customer_data(
+    operation: str,
+    customer_id: int,
+    exc: ValidationError,
+) -> NoReturn:
+    logger.error(
+        "Invalid stored CRM data during %s for customer_id=%s: %s",
+        operation,
+        customer_id,
+        exc.errors(include_input=False),
+    )
+    raise APIError(
+        "Customer data contains values that do not match the API schema.",
+        status_code=500,
+        code="data_integrity_error",
+    ) from exc
 
 
 def _coerce_activity_date(value: datetime) -> datetime:
@@ -90,67 +110,70 @@ def get_customer_activity(
         log_database_exception(logger, "get_customer_activity", exc)
         raise APIError("The database operation could not be completed.", 500, "database_error") from exc
 
-    activities: list[ActivityResponse] = []
-    if activity_type in (None, "enquiry"):
-        for enquiry in enquiries:
-            activities.append(
-                ActivityResponse(
-                    activity_id=f"enquiry-{enquiry.enquiry_id}",
-                    activity_type="enquiry",
-                    activity_date=enquiry.created_at,
-                    status=enquiry.status,
-                    title=enquiry.product or "Sales enquiry",
-                    description=enquiry.enquiry_text,
+    try:
+        activities: list[ActivityResponse] = []
+        if activity_type in (None, "enquiry"):
+            for enquiry in enquiries:
+                activities.append(
+                    ActivityResponse(
+                        activity_id=f"enquiry-{enquiry.enquiry_id}",
+                        activity_type="enquiry",
+                        activity_date=enquiry.created_at,
+                        status=enquiry.status,
+                        title=enquiry.product or "Sales enquiry",
+                        description=enquiry.enquiry_text,
+                    )
                 )
-            )
-    if activity_type in (None, "meeting"):
-        for meeting in meetings:
-            description = meeting.summary or meeting.notes or meeting.agenda
-            activities.append(
-                ActivityResponse(
-                    activity_id=f"meeting-{meeting.meeting_id}",
-                    activity_type="meeting",
-                    activity_date=meeting.scheduled_at,
-                    status=meeting.status,
-                    title=meeting.agenda or "Meeting",
-                    description=description,
+        if activity_type in (None, "meeting"):
+            for meeting in meetings:
+                description = meeting.summary or meeting.notes or meeting.agenda
+                activities.append(
+                    ActivityResponse(
+                        activity_id=f"meeting-{meeting.meeting_id}",
+                        activity_type="meeting",
+                        activity_date=meeting.scheduled_at,
+                        status=meeting.status,
+                        title=meeting.agenda or "Meeting",
+                        description=description,
+                    )
                 )
-            )
-    if activity_type in (None, "call"):
-        for call in calls:
-            activities.append(
-                ActivityResponse(
-                    activity_id=f"call-{call.call_id}",
-                    activity_type="call",
-                    activity_date=call.actual_time or call.scheduled_at or call.created_at,
-                    status=call.status,
-                    title=call.call_type or "Sales call",
-                    description=call.summary or call.outcome or call.notes,
+        if activity_type in (None, "call"):
+            for call in calls:
+                activities.append(
+                    ActivityResponse(
+                        activity_id=f"call-{call.call_id}",
+                        activity_type="call",
+                        activity_date=call.actual_time or call.scheduled_at or call.created_at,
+                        status=call.status,
+                        title=call.call_type or "Sales call",
+                        description=call.summary or call.outcome or call.notes,
+                    )
                 )
-            )
-    if activity_type in (None, "follow_up"):
-        for followup in followups:
-            activities.append(
-                ActivityResponse(
-                    activity_id=f"follow_up-{followup.followup_id}",
-                    activity_type="follow_up",
-                    activity_date=followup.due_date,
-                    status=followup.status,
-                    title=followup.type,
-                    description=followup.description,
+        if activity_type in (None, "follow_up"):
+            for followup in followups:
+                activities.append(
+                    ActivityResponse(
+                        activity_id=f"follow_up-{followup.followup_id}",
+                        activity_type="follow_up",
+                        activity_date=followup.due_date,
+                        status=followup.status,
+                        title=followup.type,
+                        description=followup.description,
+                    )
                 )
-            )
 
-    filtered = [
-        item
-        for item in activities
-        if _within_date_range(item.activity_date, start_date, end_date)
-    ]
-    return sorted(
-        filtered,
-        key=lambda item: _coerce_activity_date(item.activity_date),
-        reverse=True,
-    )
+        filtered = [
+            item
+            for item in activities
+            if _within_date_range(item.activity_date, start_date, end_date)
+        ]
+        return sorted(
+            filtered,
+            key=lambda item: _coerce_activity_date(item.activity_date),
+            reverse=True,
+        )
+    except ValidationError as exc:
+        _raise_invalid_customer_data("get_customer_activity", customer_id, exc)
 
 
 def get_customer_overview(db: Session, customer_id: int) -> CustomerOverviewResponse:
@@ -193,6 +216,8 @@ def get_customer_overview(db: Session, customer_id: int) -> CustomerOverviewResp
         )
     except APIError:
         raise
+    except ValidationError as exc:
+        _raise_invalid_customer_data("get_customer_overview", customer_id, exc)
     except SQLAlchemyError as exc:
         rollback_failed_transaction(db)
         log_database_exception(logger, "get_customer_overview", exc)

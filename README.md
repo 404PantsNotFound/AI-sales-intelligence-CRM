@@ -113,7 +113,7 @@ enquiry in a single transaction. The request groups those data as
 
 Allowed customer statuses are `active`, `inactive`, and `prospect`; sales
 stages are `new`, `qualified`, `proposal`, `negotiation`, `won`, and `lost`;
-enquiry priorities are `low`, `normal`, `high`, and `urgent`; enquiry statuses
+enquiry priorities are `low`, `medium`, `normal`, `high`, and `urgent`; enquiry statuses
 are `open`, `in_progress`, `converted`, `closed`, and `lost`.
 If omitted, customer status/sales stage default to `active`/`new`, and enquiry
 priority/status default to `normal`/`open`; product, estimated value, and
@@ -154,8 +154,8 @@ The activity endpoint accepts optional `type` (`enquiry`, `meeting`, `call`,
 or `follow_up`), `start_date`, and `end_date` query parameters. Date bounds
 are inclusive; a start date after the end date returns a validation error.
 Meeting statuses are `scheduled`, `completed`, `cancelled`, and `no_show`;
-call statuses are `scheduled`, `attempted`, `completed`, `failed`, and
-`cancelled`; follow-up statuses are `pending`, `in_progress`, `completed`,
+call statuses are `scheduled`, `attempted`, `completed`, `failed`, `cancelled`,
+and `missed`; follow-up statuses are `pending`, `in_progress`, `completed`,
 `cancelled`, and `overdue`.
 
 ## Frontend

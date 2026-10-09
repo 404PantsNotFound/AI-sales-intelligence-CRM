@@ -6,7 +6,11 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from app.schemas.company import CompanyResponse
 from app.schemas.contact import ContactResponse
 from app.schemas.customer import CustomerResponse
-from app.schemas.sales_enquiry import SalesEnquiryResponse
+from app.schemas.sales_enquiry import (
+    EnquiryPriority,
+    EnquiryStatus,
+    SalesEnquiryResponse,
+)
 from app.schemas.validators import (
     MAX_MONETARY_VALUE,
     MAX_TEXT_LENGTH,
@@ -15,10 +19,6 @@ from app.schemas.validators import (
 
 CustomerStatus = Literal["active", "inactive", "prospect"]
 SalesStage = Literal["new", "qualified", "proposal", "negotiation", "won", "lost"]
-EnquiryPriority = Literal["low", "normal", "high", "urgent"]
-EnquiryStatus = Literal["open", "in_progress", "converted", "closed", "lost"]
-
-
 class RegistrationInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -80,4 +80,3 @@ class CustomerRegistrationResponse(BaseModel):
     company: CompanyResponse
     contact: ContactResponse
     sales_enquiry: SalesEnquiryResponse
-

@@ -9,7 +9,7 @@ from app.schemas.validators import (
     reject_explicit_nulls,
 )
 
-CallStatus = Literal["scheduled", "attempted", "completed", "failed", "cancelled"]
+CallStatus = Literal["scheduled", "attempted", "completed", "failed", "cancelled", "missed"]
 
 
 class CallInput(BaseModel):
@@ -71,4 +71,3 @@ class CallResponse(CallCreate):
         normalized = normalize_utc_datetime(value)
         assert normalized is not None
         return normalized
-

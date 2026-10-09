@@ -12,7 +12,7 @@ from app.schemas.validators import (
     validate_monetary_decimal,
 )
 
-EnquiryPriority = Literal["low", "normal", "high", "urgent"]
+EnquiryPriority = Literal["low", "medium", "normal", "high", "urgent"]
 EnquiryStatus = Literal["open", "in_progress", "converted", "closed", "lost"]
 
 
@@ -76,4 +76,3 @@ class SalesEnquiryResponse(SalesEnquiryCreate):
         normalized = normalize_utc_datetime(value)
         assert normalized is not None
         return normalized
-
