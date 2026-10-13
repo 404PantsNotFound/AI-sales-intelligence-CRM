@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import APIError
@@ -12,6 +12,7 @@ from app.schemas.agent import (
     AgentActionResult,
     AgentChatRequest,
     AgentChatResponse,
+    AgentConversationResponse,
     AgentPolicyUpdateRequest,
     AgentTaskInputRequest,
     AgentTaskResponse,
@@ -19,7 +20,7 @@ from app.schemas.agent import (
     CustomerSummaryResponse,
     MeetingBriefResponse,
 )
-from app.services import agent_action_service, agent_service, ai_service
+from app.services import agent_action_service, agent_conversation_service, agent_service, ai_service
 from app.services.hitl_policy import get_action_policy, list_action_policies, set_action_policy
 from app.services import hitl_task_service
 
@@ -37,6 +38,23 @@ def chat(
     current_user: User = Depends(get_current_user),
 ) -> AgentChatResponse:
     return agent_service.chat_with_agent(db, request, user_id=current_user.user_id)
+
+
+@router.get(
+    "/conversations/latest",
+    response_model=AgentConversationResponse | None,
+    summary="Restore the current user's latest chat for a customer",
+)
+def latest_conversation(
+    customer_id: int | None = Query(default=None, ge=1),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> AgentConversationResponse | None:
+    return agent_conversation_service.latest(
+        db,
+        user_id=current_user.user_id,
+        customer_id=customer_id,
+    )
 
 
 @router.post(

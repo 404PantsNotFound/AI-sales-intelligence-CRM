@@ -664,6 +664,8 @@ class PendingActionStore:
                     expires_at=expires_at,
                 )
                 db.add(proposal)
+                # No ORM relationship orders these inserts, so the audit FK needs the parent first.
+                db.flush()
                 _write_audit(
                     db,
                     action_id=action_id,
@@ -691,6 +693,13 @@ class PendingActionStore:
             db.rollback()
             raise
         except SQLAlchemyError as exc:
+            log_database_exception(
+                logger,
+                "save_pending_actions",
+                exc,
+                include_exception_details=False,
+                include_integrity_diagnostics=True,
+            )
             rollback_failed_transaction(db)
             raise APIError(
                 "The pending actions could not be saved.",

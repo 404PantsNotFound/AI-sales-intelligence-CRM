@@ -3,6 +3,9 @@ from typing import Any, Literal
 
 from langchain_core.tools import StructuredTool
 from langgraph.types import interrupt
+from sqlalchemy import select
+
+from app.models import Call, FollowUp, Meeting
 
 from app.schemas.agent import AgentActionName
 from app.schemas.follow_up import FollowUpStatus
@@ -18,14 +21,17 @@ from .action_schemas import (
     ScheduleCallProposal,
 )
 from .context import AgentToolContext
+from .time_grounding import ground_meeting_time
 from app.schemas.validators import (
     AmbiguousLocalTimeError,
     NonexistentLocalTimeError,
+    normalize_utc_datetime,
 )
 from app.services.scheduling_service import (
     ScheduleRequest,
     default_duration,
     inspect_availability,
+    starts_in_past,
 )
 from sqlalchemy.orm import Session
 
@@ -41,11 +47,73 @@ def build_action_proposal_tools(
         interrupt({"action": action, "payload": payload})
         return "The action still requires confirmation through the confirmation endpoint."
 
+    def _past_message(
+        action: AgentActionName,
+        activity_type: Literal["meeting", "call", "followup"],
+        values: dict[str, Any],
+        customer_id: int,
+        starts_at: datetime,
+    ) -> str | None:
+        moment = normalize_utc_datetime(starts_at)
+        assert moment is not None
+        if not starts_in_past(moment):
+            return None
+        # No proposal and no suggestions until the user asks for a new activity.
+        context.schedule_conflict = {
+            "action": action,
+            "values": values,
+            "suggestions": [],
+            "reason": "past",
+        }
+        model, starts_column, id_name, active = {
+            "meeting": (Meeting, Meeting.scheduled_at, "meeting_id", ("scheduled",)),
+            "call": (Call, Call.scheduled_at, "call_id", ("scheduled",)),
+            "followup": (
+                FollowUp,
+                FollowUp.due_date,
+                "followup_id",
+                ("pending", "in_progress", "overdue"),
+            ),
+        }[activity_type]
+        history = db.scalars(
+            select(model)
+            .where(
+                model.customer_id == customer_id,
+                starts_column == moment,
+                model.status.not_in(active),
+            )
+            .limit(1)
+        ).first()
+        label = "follow-up" if activity_type == "followup" else activity_type
+        note = (
+            f" {label.capitalize()} #{getattr(history, id_name)} at that time is a "
+            f"{history.status} historical record, not a scheduling conflict."
+            if history is not None
+            else ""
+        )
+        # The chat reply is built from this backend result, never from model text.
+        context.schedule_conflict["message"] = (
+            f"The requested {label} time has already passed.{note} No proposal was "
+            f"created. Would you like to schedule a new {label} at a future time?"
+        )
+        return (
+            f"The requested {label} time has already passed.{note} No proposal was "
+            f"created and no times were suggested. Ask whether the user wants to "
+            f"schedule a new {label} at a future time."
+        )
+
     def _availability_message(
         result: dict[str, object],
+        action: AgentActionName,
+        values: dict[str, Any],
     ) -> str | None:
         if result["available"]:
             return None
+        context.schedule_conflict = {
+            "action": action,
+            "values": values,
+            "suggestions": result["suggestions"],
+        }
         conflicts = result["conflicts"]
         suggestions = result["suggestions"]
         conflict_types = sorted(
@@ -61,6 +129,16 @@ def build_action_proposal_tools(
             for item in suggestions
             if isinstance(item, dict) and isinstance(item.get("starts_at"), str)
         ]
+        context.schedule_conflict["message"] = (
+            f"That time overlaps an existing scheduled {' and '.join(conflict_types) or 'activity'}. "
+            "No proposal was created. "
+            + (
+                "Choose one of the available times below."
+                if options
+                else "No available alternative was found in the suggestion window; "
+                "please suggest another day."
+            )
+        )
         if options:
             return (
                 f"That time conflicts with {labels}. Available alternatives "
@@ -85,7 +163,15 @@ def build_action_proposal_tools(
         agenda: str | None = None,
         notes: str | None = None,
     ) -> str:
-        """Collect a specific meeting date, time, and timezone before proposing. Never invent a schedule."""
+        """Collect a specific meeting date, time, and timezone before proposing. Never invent a schedule.
+
+        Pass scheduled_time only if the user's latest message states a time.
+        """
+        # A time not written in the current message (e.g. copied from an earlier
+        # request) is dropped, so the user is asked instead of it being reused.
+        scheduled_time, time_question = ground_meeting_time(
+            context.request_message, scheduled_time
+        )
         task_data = CreateMeetingTaskInput.model_validate(
             {
                 "customer_id": customer_id,
@@ -123,6 +209,7 @@ def build_action_proposal_tools(
                     "clarification": True,
                     "action": "create_meeting",
                     "payload": values,
+                    **({"question": time_question} if time_question else {}),
                 }
             )
             return "Ask for each missing meeting schedule detail before proposing it."
@@ -148,6 +235,15 @@ def build_action_proposal_tools(
         proposal_values["scheduled_at"] = scheduled_at
         proposal = CreateMeetingProposal.model_validate(proposal_values)
         if proposal.status == "scheduled":
+            past_message = _past_message(
+                "create_meeting",
+                "meeting",
+                task_data.model_dump(mode="json", exclude_none=True),
+                proposal.customer_id,
+                proposal.scheduled_at,
+            )
+            if past_message:
+                return past_message
             availability = inspect_availability(
                 db,
                 ScheduleRequest(
@@ -158,7 +254,11 @@ def build_action_proposal_tools(
                     timezone_name=proposal.scheduled_timezone or "UTC",
                 ),
             )
-            conflict_message = _availability_message(availability)
+            conflict_message = _availability_message(
+                availability,
+                "create_meeting",
+                task_data.model_dump(mode="json", exclude_none=True),
+            )
             if conflict_message:
                 return conflict_message
 
@@ -212,6 +312,16 @@ def build_action_proposal_tools(
         if invalid:
             return invalid
 
+        if data.status in {"pending", "in_progress"}:
+            past_message = _past_message(
+                "create_followup",
+                "followup",
+                data.model_dump(mode="json", exclude_none=True),
+                data.customer_id,
+                data.due_date,
+            )
+            if past_message:
+                return past_message
         if data.status in {"pending", "in_progress", "overdue"}:
             availability = inspect_availability(
                 db,
@@ -223,7 +333,11 @@ def build_action_proposal_tools(
                     timezone_name=data.due_timezone or "UTC",
                 ),
             )
-            conflict_message = _availability_message(availability)
+            conflict_message = _availability_message(
+                availability,
+                "create_followup",
+                data.model_dump(mode="json", exclude_none=True),
+            )
             if conflict_message:
                 return conflict_message
 
@@ -310,6 +424,15 @@ def build_action_proposal_tools(
         )
         if invalid:
             return invalid
+        past_message = _past_message(
+            "schedule_call",
+            "call",
+            data.model_dump(mode="json", exclude_none=True),
+            data.customer_id,
+            data.scheduled_at,
+        )
+        if past_message:
+            return past_message
         availability = inspect_availability(
             db,
             ScheduleRequest(
@@ -319,7 +442,11 @@ def build_action_proposal_tools(
                 timezone_name=data.scheduled_timezone or "UTC",
             ),
         )
-        conflict_message = _availability_message(availability)
+        conflict_message = _availability_message(
+            availability,
+            "schedule_call",
+            data.model_dump(mode="json", exclude_none=True),
+        )
         if conflict_message:
             return conflict_message
         return _prepare("schedule_call", data.model_dump(mode="json"))

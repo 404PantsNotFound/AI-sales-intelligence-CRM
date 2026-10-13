@@ -36,6 +36,7 @@ from app.services.scheduling_service import (
     ScheduleRequest,
     default_duration,
     inspect_availability,
+    require_future_start,
 )
 from app.agent.tools.action_schemas import (
     CreateFollowupProposal,
@@ -117,6 +118,8 @@ def _require_scheduling_availability(
             )
     if request is None:
         return
+    if not (action == "create_followup" and payload.get("status") == "overdue"):
+        require_future_start(db, request)
     result = inspect_availability(db, request)
     if not result["available"]:
         raise APIError(
@@ -385,14 +388,15 @@ def submit_task_input(
     user_id: int,
 ) -> AgentTaskResponse:
     task = pending_actions.get_task(db, task_id, user_id=user_id)
+    # get_task marks an overdue task expired, so report expiry before the status check.
+    if task.status == "expired" or task_is_expired(task.expires_at):
+        raise APIError("Task has expired.", 410, "task_expired")
     if task.status != "collecting_information":
         raise APIError(
             "Task is not collecting information.",
             409,
             "invalid_task_transition",
         )
-    if task_is_expired(task.expires_at):
-        raise APIError("Task has expired.", 410, "task_expired")
     operations = _decode_operations(task.collected_data)
     if request.operation_index >= len(operations):
         raise APIError("Operation index is not part of this task.", 422, "invalid_task_input")
@@ -421,7 +425,7 @@ def submit_task_input(
         try:
             task = _finalize_if_complete(db, task, operations, user_id=user_id)
         except APIError as exc:
-            if exc.code == "schedule_conflict":
+            if exc.code in {"schedule_conflict", "schedule_in_past"}:
                 db.rollback()
                 pending_actions.update_task_inputs(
                     db,

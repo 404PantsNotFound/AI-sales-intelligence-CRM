@@ -1,10 +1,12 @@
 import {
+  createAgentTask,
+  getAnalytics,
   getAuthToken,
   getAuthenticatedUser,
   getWorkspaceActivities,
   moveWorkspaceActivity,
 } from "./api.js";
-import { element, mountAuthControls } from "./common.js";
+import { element, humanize, mountAuthControls } from "./common.js";
 
 const publicHome = document.querySelector("#public-home");
 const dashboard = document.querySelector("#dashboard");
@@ -404,10 +406,229 @@ async function loadDashboard() {
 
 mountAuthControls();
 
+// Headline counts from the existing analytics overview; a failure leaves the dashes.
+async function loadGlance() {
+  try {
+    const overview = await getAnalytics("overview");
+    const format = new Intl.NumberFormat();
+    for (const target of document.querySelectorAll("[data-glance]")) {
+      const value = Number(overview?.[target.dataset.glance]);
+      target.textContent = Number.isFinite(value) ? format.format(value) : "–";
+      if (target.dataset.glance === "overdue_followups") {
+        target.closest(".glance-item").classList.toggle("has-items", value > 0);
+      }
+    }
+  } catch {
+    // Optional context; the schedule below is the primary content.
+  }
+}
+
+// ---------- Needs attention (GET /api/analytics/attention; rules-based, read-only) ----------
+
+const ATTENTION_LIMIT = 8;
+// Labels and symbols carry the meaning; colour only reinforces it.
+const ATTENTION_REASONS = {
+  overdue_followup: { label: "Overdue follow-up", symbol: "!" },
+  no_recent_activity: { label: "No recent activity", symbol: "◷" },
+  no_next_step: { label: "No next step", symbol: "→" },
+  high_priority: { label: "High priority", symbol: "▲" },
+  missing_value: { label: "No estimated value", symbol: "?" },
+};
+const attentionStatus = document.querySelector("#attention-status");
+const attentionError = document.querySelector("#attention-error");
+const attentionList = document.querySelector("#attention-list");
+const attentionSummary = document.querySelector("#attention-summary");
+const attentionRules = document.querySelector("#attention-rules");
+const attentionRetry = document.querySelector("#attention-retry");
+
+function renderAttentionItem(item) {
+  const card = element("li", "attention-item");
+  const top = element("div", "attention-item-top");
+  const customer = element("a", "attention-customer", `${item.customer_name} · ${item.company_name}`);
+  customer.href = `/customer?customer_id=${encodeURIComponent(item.customer_id)}`;
+  top.append(customer, element("span", "attention-priority", `${humanize(item.priority)} priority`));
+  const enquiry = element(
+    "p",
+    "attention-enquiry",
+    `${item.product || "Sales enquiry"} · Enquiry #${item.enquiry_id} · ${humanize(item.status)}`,
+  );
+  const reasons = element("ul", "attention-reasons");
+  for (const reason of Array.isArray(item.reasons) ? item.reasons : []) {
+    const known = ATTENTION_REASONS[reason.code];
+    const row = element("li", "attention-reason");
+    row.dataset.reason = reason.code;
+    const symbol = element("span", "attention-reason-symbol", known?.symbol ?? "•");
+    symbol.setAttribute("aria-hidden", "true");
+    row.append(
+      symbol,
+      element("strong", "", known?.label ?? humanize(reason.code)),
+      element("span", "attention-reason-detail", reason.detail),
+    );
+    reasons.append(row);
+  }
+  card.append(top, enquiry, reasons);
+  const suggestions = renderSuggestions(item);
+  if (suggestions) card.append(suggestions);
+  const context = renderCustomerLevelContext(item);
+  if (context) card.append(context);
+  return card;
+}
+
+// Suggested next steps come from the API's reason codes. Task suggestions only prepare a
+// draft in the existing Approvals workflow; review suggestions are plain links.
+const TASK_FIELD_LABELS = {
+  scheduled_at: "the call date and time",
+  due_date: "the due date",
+  type: "the follow-up type",
+};
+let preparingTask = false;
+
+function setSuggestionButtonsDisabled(disabled) {
+  for (const button of attentionList.querySelectorAll("button.attention-suggestion-action")) {
+    button.disabled = disabled;
+  }
+}
+
+async function prepareSuggestedTask(action, button, status) {
+  if (preparingTask) return;
+  preparingTask = true;
+  setSuggestionButtonsDisabled(true);
+  button.textContent = "Preparing task…";
+  status.hidden = true;
+  const values = { ...action.prefill };
+  if (action.timezone_field) values[action.timezone_field] = timezoneName;
+  try {
+    await createAgentTask([{ action: action.kind, values }]);
+    window.location.assign(`/customer?customer_id=${encodeURIComponent(action.prefill.customer_id)}#approvals`);
+  } catch (error) {
+    preparingTask = false;
+    setSuggestionButtonsDisabled(false);
+    button.textContent = button.dataset.label;
+    // The shared request helper has already started the redirect to sign in on 401.
+    status.textContent = error?.status === 401
+      ? "Your session has expired. Redirecting to sign in…"
+      : `The task could not be prepared. ${error?.message || ""}`.trim();
+    status.hidden = false;
+  }
+}
+
+function renderSuggestions(item) {
+  const actions = Array.isArray(item.suggested_actions) ? item.suggested_actions : [];
+  if (!actions.length) return null;
+  const box = element("div", "attention-suggestions");
+  box.append(element("p", "attention-suggestions-heading", "Suggested next steps"));
+  const list = element("ul", "attention-suggestion-list");
+  const status = element("p", "attention-suggestion-error");
+  status.setAttribute("role", "alert");
+  status.hidden = true;
+  for (const action of actions) {
+    const row = element("li", "attention-suggestion");
+    const codes = Array.isArray(action.reason_codes) ? action.reason_codes : [];
+    const basis = `Based on: ${codes.map((code) => ATTENTION_REASONS[code]?.label ?? humanize(code)).join(", ")}.`;
+    if (action.opens_task) {
+      const label = `Prepare task: ${action.label}`;
+      const button = element("button", "button button-secondary button-sm attention-suggestion-action", label);
+      button.type = "button";
+      button.dataset.label = label;
+      button.addEventListener("click", () => void prepareSuggestedTask(action, button, status));
+      const needs = (action.user_must_provide ?? []).map((field) => TASK_FIELD_LABELS[field] ?? humanize(field).toLowerCase());
+      row.append(
+        button,
+        element(
+          "span",
+          "attention-suggestion-note",
+          `${basis} Opens a draft in Approvals with this customer and enquiry filled in${needs.length ? `; you add ${needs.join(" and ")}` : ""}. Nothing changes in the CRM until you submit it.`,
+        ),
+      );
+    } else {
+      const link = element("a", "attention-suggestion-action attention-suggestion-link", action.label);
+      link.href = `/customer?customer_id=${encodeURIComponent(action.prefill.customer_id)}`;
+      row.append(link, element("span", "attention-suggestion-note", `${basis} Opens the customer record; no task is created.`));
+    }
+    list.append(row);
+  }
+  box.append(list, status);
+  return box;
+}
+
+// Same UTC calendar date the API uses in its reason details.
+function utcDay(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+}
+
+// Records linked to the customer but to no enquiry: context only, never an enquiry reason.
+function renderCustomerLevelContext(item) {
+  const rows = [];
+  const overdue = Number(item.customer_level_overdue_followup_count) || 0;
+  if (overdue > 0) {
+    const oldest = utcDay(item.customer_level_oldest_overdue_due_at);
+    rows.push(["attention-context-overdue", "Overdue customer-level follow-ups", `${overdue}${oldest ? `; the oldest was due ${oldest}` : ""}`]);
+  }
+  const next = item.customer_level_next_step_at && utcDay(item.customer_level_next_step_at);
+  if (next) rows.push(["", "Next customer-level activity", next]);
+  const last = item.customer_level_last_activity_at && utcDay(item.customer_level_last_activity_at);
+  if (last) rows.push(["", "Last customer-level activity", last]);
+  if (!rows.length) return null;
+
+  const box = element("div", "attention-context");
+  box.append(element("p", "attention-context-heading", "Customer-level · not linked to this enquiry"));
+  const list = element("ul", "attention-context-list");
+  for (const [className, label, value] of rows) {
+    const row = element("li", className);
+    row.append(element("strong", "", `${label}: `), element("span", "", value));
+    list.append(row);
+  }
+  box.append(list);
+  return box;
+}
+
+function renderAttention(queue) {
+  const items = Array.isArray(queue?.items) ? queue.items : [];
+  const needing = Number(queue?.needing_attention) || 0;
+  const open = Number(queue?.open_enquiries) || 0;
+  attentionList.replaceChildren(...items.map(renderAttentionItem));
+  attentionSummary.textContent = open
+    ? `${needing} of ${open} open enquiries${needing > items.length ? ` · showing the first ${items.length}` : ""}`
+    : "";
+  attentionStatus.hidden = items.length > 0;
+  attentionStatus.textContent = open
+    ? "No open enquiries need attention right now."
+    : "There are no open enquiries.";
+  const ordering = Array.isArray(queue?.ordering) ? queue.ordering : [];
+  attentionRules.querySelector("ol").replaceChildren(...ordering.map((rule) => element("li", "", rule)));
+  attentionRules.hidden = !items.length || !ordering.length;
+}
+
+async function loadAttention() {
+  attentionError.hidden = true;
+  attentionRetry.hidden = true;
+  attentionStatus.hidden = false;
+  attentionStatus.textContent = "Loading enquiries that need attention…";
+  try {
+    renderAttention(await getAnalytics("attention", { limit: ATTENTION_LIMIT }));
+  } catch (error) {
+    attentionList.replaceChildren();
+    attentionRules.hidden = true;
+    attentionStatus.hidden = true;
+    attentionSummary.textContent = "";
+    // The shared request helper has already started the redirect to sign in.
+    const expired = error?.status === 401;
+    attentionError.textContent = expired
+      ? "Your session has expired. Redirecting to sign in…"
+      : "Enquiries that need attention could not be loaded.";
+    attentionError.hidden = false;
+    attentionRetry.hidden = expired;
+  }
+}
+
 if (getAuthToken()) {
   publicHome.hidden = true;
   dashboard.hidden = false;
   setGreeting();
+  void loadGlance();
+  void loadAttention();
+  attentionRetry.addEventListener("click", () => void loadAttention());
   document.querySelector("#schedule-previous").addEventListener("click", () => {
     const previousWeek = new Date(selectedDate);
     previousWeek.setDate(previousWeek.getDate() - 7);

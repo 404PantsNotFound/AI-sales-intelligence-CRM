@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="SalesDesk settings: appearance, workspace preferences, integrations and account.">
+    <title>Settings | SalesDesk</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%234338ca'/%3E%3Ctext x='16' y='22' font-family='Segoe UI,Arial' font-size='18' font-weight='700' fill='white' text-anchor='middle'%3ES%3C/text%3E%3C/svg%3E">
+    <script src="/static/js/theme-init.js"></script>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/settings.css">
+    <link rel="stylesheet" href="/static/css/theme.css">
+    <script type="module" src="/static/js/settings.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to main content</a>
+    <div class="app-shell">
+      <aside id="app-sidebar" class="app-sidebar" aria-label="Primary"></aside>
+      <div class="sidebar-backdrop" aria-hidden="true"></div>
+      <div class="app-main">
+        <header class="site-header app-topbar"></header>
+        <main id="main" class="page-shell settings-shell">
+          <div class="page-intro">
+            <div>
+              <h1>Settings</h1>
+              <p>Appearance and workspace preferences apply immediately and are saved in this browser. Integrations and account details are stored on the server.</p>
+            </div>
+          </div>
+
+          <div class="settings-layout">
+            <nav class="settings-nav" aria-label="Settings sections">
+              <a href="#appearance">Appearance</a>
+              <a href="#workspace">Workspace</a>
+              <a href="#integrations">Integrations</a>
+              <a href="#account">Account</a>
+            </nav>
+
+            <div class="settings-sections">
+              <p id="preferences-status" class="settings-saved" role="status" aria-live="polite"></p>
+
+              <section id="appearance" class="settings-card panel" aria-labelledby="appearance-heading">
+                <div class="settings-card-heading">
+                  <h2 id="appearance-heading">Appearance</h2>
+                  <span class="settings-scope">This browser</span>
+                </div>
+                <form id="appearance-form" class="settings-rows">
+                  <fieldset class="settings-row">
+                    <legend>Theme</legend>
+                    <p class="settings-help">“System” follows your operating system's light or dark setting.</p>
+                    <div class="segmented">
+                      <label><input type="radio" name="theme" value="system"><span>System</span></label>
+                      <label><input type="radio" name="theme" value="light"><span>Light</span></label>
+                      <label><input type="radio" name="theme" value="dark"><span>Dark</span></label>
+                    </div>
+                  </fieldset>
+                  <fieldset class="settings-row">
+                    <legend>Density</legend>
+                    <p class="settings-help">Compact reduces spacing and control heights to fit more on screen.</p>
+                    <div class="segmented">
+                      <label><input type="radio" name="density" value="comfortable"><span>Comfortable</span></label>
+                      <label><input type="radio" name="density" value="compact"><span>Compact</span></label>
+                    </div>
+                  </fieldset>
+                  <fieldset class="settings-row">
+                    <legend>Motion</legend>
+                    <p class="settings-help">Reduce turns off animated transitions and smooth scrolling.</p>
+                    <div class="segmented">
+                      <label><input type="radio" name="motion" value="system"><span>Follow system</span></label>
+                      <label><input type="radio" name="motion" value="reduce"><span>Reduce</span></label>
+                    </div>
+                  </fieldset>
+                </form>
+              </section>
+
+              <section id="workspace" class="settings-card panel" aria-labelledby="workspace-heading">
+                <div class="settings-card-heading">
+                  <h2 id="workspace-heading">Workspace</h2>
+                  <span class="settings-scope">This browser</span>
+                </div>
+                <form id="workspace-form" class="settings-rows">
+                  <fieldset class="settings-row">
+                    <legend>Navigation sidebar</legend>
+                    <p class="settings-help">Collapsed shows icons only on wide screens. You can also toggle it from the sidebar.</p>
+                    <div class="segmented">
+                      <label><input type="radio" name="sidebar" value="expanded"><span>Expanded</span></label>
+                      <label><input type="radio" name="sidebar" value="collapsed"><span>Collapsed</span></label>
+                    </div>
+                  </fieldset>
+                  <div class="settings-row">
+                    <label class="settings-label" for="start-page">Start page after sign-in</label>
+                    <p class="settings-help">Used when you sign in without following a link to a specific page.</p>
+                    <select id="start-page" name="startPage" class="select settings-select">
+                      <option value="/">Dashboard</option>
+                      <option value="/customer">Customers</option>
+                      <option value="/analytics">Analytics</option>
+                    </select>
+                  </div>
+                </form>
+              </section>
+
+              <section id="integrations" class="settings-card panel" aria-labelledby="integrations-heading">
+                <div class="settings-card-heading">
+                  <h2 id="integrations-heading">Integrations</h2>
+                  <span class="settings-scope">Your account</span>
+                </div>
+                <div class="settings-rows">
+                  <div class="settings-row">
+                    <h3 id="calendar-heading" class="settings-label">Google Calendar</h3>
+                    <p class="settings-help">Scheduled CRM activities are added to your calendar after they are saved and approved. Nothing is copied back from Google.</p>
+                    <p id="calendar-status" class="settings-status">Loading…</p>
+                    <p id="calendar-message" class="settings-message" role="status" aria-live="polite" hidden></p>
+                    <div class="settings-actions">
+                      <button id="calendar-connect" class="button button-primary" type="button" hidden>Connect Google Calendar</button>
+                      <button id="calendar-disconnect" class="button button-secondary" type="button" hidden>Disconnect</button>
+                    </div>
+                    <form id="calendar-preferences" class="settings-form" hidden>
+                      <label class="settings-label" for="reminder-minutes">Popup reminder</label>
+                      <div class="settings-inline">
+                        <input id="reminder-minutes" class="input settings-number" name="reminder_minutes" type="number" min="0" max="1440" step="1" required>
+                        <span class="settings-help">minutes before the event</span>
+                        <button class="button button-secondary button-sm" type="submit">Save</button>
+                      </div>
+                    </form>
+                    <div id="calendar-failures" class="settings-inline settings-warning" hidden>
+                      <p id="calendar-failure-count"></p>
+                      <button id="calendar-retry" class="button button-secondary button-sm" type="button">Retry failed syncs</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section id="account" class="settings-card panel" aria-labelledby="account-heading">
+                <div class="settings-card-heading">
+                  <h2 id="account-heading">Account</h2>
+                </div>
+                <div class="settings-rows">
+                  <dl id="account-details" class="settings-details"></dl>
+                  <div id="admin-note" class="settings-row settings-admin" hidden>
+                    <span class="settings-label">Administrator</span>
+                    <p class="settings-help">Global action policies decide which assistant actions need approval. They are managed in <a href="/customer#approvals">Approvals</a> and enforced by the server.</p>
+                  </div>
+                  <div class="settings-actions">
+                    <button id="settings-sign-out" class="button button-secondary" type="button">Sign out</button>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

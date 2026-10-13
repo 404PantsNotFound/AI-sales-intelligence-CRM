@@ -1,10 +1,11 @@
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import runpy
 import sqlite3
+from typing import Any
 
 import pytest
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -491,3 +492,100 @@ def test_hitl_models_and_migration_follow_current_head() -> None:
         "hitl_policy_audits",
         "hitl_action_audits",
     }.issubset(set(HitlTask.metadata.tables))
+
+
+def _fk_engine():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(
+        dbapi_connection: sqlite3.Connection,
+        _connection_record: object,
+    ) -> None:
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+    Base.metadata.create_all(engine)
+    return engine
+
+
+def _ready_task(db: Session, user_id: int) -> str:
+    now = datetime.now(timezone.utc)
+    db.add(
+        HitlTask(
+            task_id="ready-task",
+            owner_user_id=user_id,
+            collected_data={},
+            status="ready_for_review",
+            created_at=now,
+            updated_at=now,
+            expires_at=now + timedelta(days=1),
+        )
+    )
+    db.commit()
+    return "ready-task"
+
+
+def test_add_many_persists_proposals_before_audits_with_foreign_keys() -> None:
+    engine = _fk_engine()
+    try:
+        with sessionmaker(bind=engine, expire_on_commit=False)() as db:
+            user = _create_user(db, "hitl.add-many-fk@example.com")
+            task_id = _ready_task(db, user.user_id)
+
+            records = PendingActionStore().add_many(
+                db,
+                [("create_meeting", {"customer_id": 21, "agenda": "Review"})],
+                task_id=task_id,
+                user_id=user.user_id,
+            )
+
+            assert db.get(HitlActionProposal, records[0].action_id).status == "pending"
+            assert db.get(HitlTask, task_id).status == "awaiting_approval"
+            audit = db.scalar(
+                select(HitlActionAudit).where(HitlActionAudit.action_id == records[0].action_id)
+            )
+            assert audit is not None and audit.event_type == "proposed"
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_add_many_invalid_foreign_key_rolls_back_without_partial_proposals(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.services import agent_action_state
+
+    engine = _fk_engine()
+    real_write_audit = agent_action_state._write_audit
+
+    def audit_missing_parent(db: Session, **kwargs: Any) -> None:
+        real_write_audit(db, **{**kwargs, "action_id": "missing-proposal"})
+
+    monkeypatch.setattr(agent_action_state, "_write_audit", audit_missing_parent)
+    try:
+        with sessionmaker(bind=engine, expire_on_commit=False)() as db:
+            user = _create_user(db, "hitl.add-many-bad-fk@example.com")
+            task_id = _ready_task(db, user.user_id)
+
+            with pytest.raises(APIError) as raised:
+                PendingActionStore().add_many(
+                    db,
+                    [("create_meeting", {"customer_id": 21, "agenda": "Review"})],
+                    task_id=task_id,
+                    user_id=user.user_id,
+                )
+
+            assert raised.value.code == "hitl_persistence_error"
+            assert db.scalar(select(func.count()).select_from(HitlActionProposal)) == 0
+            assert db.scalar(select(func.count()).select_from(HitlActionAudit)) == 0
+            assert db.get(HitlTask, task_id).status == "ready_for_review"
+            assert "operation=save_pending_actions error_type=IntegrityError" in caplog.text
+            assert "Review" not in caplog.text
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()

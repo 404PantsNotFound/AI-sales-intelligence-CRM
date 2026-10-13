@@ -250,15 +250,43 @@ export function generateMeetingBrief(meetingId) {
   });
 }
 
-export function chatWithAgent(message, customerId = null) {
+export function getCalendarStatus() {
+  return request("/integrations/google-calendar");
+}
+
+export function connectGoogleCalendar() {
+  return request("/integrations/google-calendar/connect", { method: "POST" });
+}
+
+export function disconnectGoogleCalendar() {
+  return request("/integrations/google-calendar", { method: "DELETE" });
+}
+
+export function updateCalendarPreferences(reminderMinutes) {
+  return request("/integrations/google-calendar/preferences", {
+    method: "PUT",
+    body: JSON.stringify({ reminder_minutes: reminderMinutes }),
+  });
+}
+
+export function retryCalendarSync() {
+  return request("/integrations/google-calendar/retry", { method: "POST" });
+}
+
+export function chatWithAgent(message, customerId = null, conversationId = null) {
   return request("/agent/chat", {
     method: "POST",
     body: JSON.stringify({
       message,
       timezone_name: Intl.DateTimeFormat().resolvedOptions().timeZone,
       ...(customerId === null ? {} : { customer_id: customerId }),
+      ...(conversationId ? { conversation_id: conversationId } : {}),
     }),
   });
+}
+
+export function getLatestConversation(customerId) {
+  return request(`/agent/conversations/latest?customer_id=${encodeURIComponent(customerId)}`);
 }
 
 export function confirmAgentAction(actionId) {

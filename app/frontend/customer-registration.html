@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Register a customer, company, primary contact, and sales enquiry.">
     <title>Register Customer | SalesDesk</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%234338ca'/%3E%3Ctext x='16' y='22' font-family='Segoe UI,Arial' font-size='18' font-weight='700' fill='white' text-anchor='middle'%3ES%3C/text%3E%3C/svg%3E">
     <script src="/static/js/theme-init.js"></script>
     <link rel="stylesheet" href="/static/css/style.css">
     <link rel="stylesheet" href="/static/css/registration.css">
@@ -12,22 +13,19 @@
     <script type="module" src="/static/js/registration.js"></script>
   </head>
   <body>
-    <header class="site-header">
-      <a class="brand" href="/" aria-label="Sales CRM home"><span class="brand-mark" aria-hidden="true">S</span><span>Sales<span class="brand-light">Desk</span></span></a>
-      <nav class="top-nav" aria-label="Main navigation">
-        <a class="nav-link" href="/">Overview</a>
-        <a class="nav-link active" href="/customer-registration">Register customer</a>
-        <a class="nav-link" href="/customer">Customer intelligence</a>
-        <a class="nav-link" href="/analytics">Analytics</a>
-      </nav>
-      <a class="header-back" href="/">← <span>Home</span></a>
-    </header>
+    <a class="skip-link" href="#main">Skip to main content</a>
+    <div class="app-shell">
+      <aside id="app-sidebar" class="app-sidebar" aria-label="Primary"></aside>
+      <div class="sidebar-backdrop" aria-hidden="true"></div>
+      <div class="app-main">
+        <header class="site-header app-topbar"></header>
 
-    <main class="page-shell registration-shell">
+    <main id="main" class="page-shell registration-shell">
       <div class="page-intro">
-        <p class="eyebrow">CUSTOMER WORKSPACE <span class="eyebrow-divider">/</span> NEW RECORD</p>
-        <h1>Register a customer</h1>
-        <p>Bring the customer, company, key contact, and first enquiry into your workspace.</p>
+        <div>
+          <h1>Register a customer</h1>
+          <p>Create the customer, their company, a primary contact and the first sales enquiry in one step.</p>
+        </div>
       </div>
 
       <div class="registration-layout">
@@ -131,27 +129,32 @@
           <div id="form-error" class="form-alert" role="alert" hidden></div>
           <div class="form-actions">
             <p><span class="required-mark">*</span> Required fields</p>
-            <button id="submit-button" class="button button-primary" type="submit"><span data-button-label>Register customer</span><span aria-hidden="true">→</span></button>
+            <button id="submit-button" class="button button-primary" type="submit"><span data-button-label>Register customer</span></button>
           </div>
         </form>
 
         <aside class="registration-aside">
           <div class="aside-note">
-            <span class="aside-icon" aria-hidden="true">✦</span>
-            <h2>One complete picture</h2>
-            <p>Registering these details together links the company, contact, and enquiry from day one.</p>
+            <h2>What gets created</h2>
+            <ul>
+              <li>A customer record with its status and sales stage</li>
+              <li>The company, shared by all of its customers</li>
+              <li>A primary contact</li>
+              <li>The first sales enquiry, linked to all of the above</li>
+            </ul>
           </div>
           <div id="registration-success" class="success-card" role="status" hidden>
-            <span class="success-icon" aria-hidden="true">✓</span>
-            <p class="eyebrow">REGISTRATION COMPLETE</p>
+            <p class="eyebrow">Registration complete</p>
             <h2>Customer added</h2>
             <p id="success-summary"></p>
             <dl id="success-details" class="success-details"></dl>
-            <a id="open-customer-link" class="button button-primary button-block" href="/customer">Open customer profile <span aria-hidden="true">→</span></a>
+            <a id="open-customer-link" class="button button-primary button-block" href="/customer">Open customer profile</a>
             <button id="register-another" class="text-button" type="button">Register another customer</button>
           </div>
         </aside>
       </div>
     </main>
+      </div>
+    </div>
   </body>
 </html>

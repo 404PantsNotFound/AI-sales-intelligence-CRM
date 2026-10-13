@@ -108,6 +108,21 @@ def test_all_models_register_expected_tables() -> None:
         "hitl_action_audits": {
             "audit_id", "action_id", "actor_user_id", "event_type", "details", "created_at",
         },
+        "google_calendar_connections": {
+            "user_id", "encrypted_refresh_token", "encrypted_access_token",
+            "access_token_expires_at", "scope", "status", "reminder_minutes",
+            "connected_at", "updated_at",
+        },
+        "agent_conversations": {
+            "conversation_id", "owner_user_id", "customer_id", "created_at", "updated_at",
+        },
+        "agent_conversation_messages": {
+            "message_id", "conversation_id", "role", "content", "created_at",
+        },
+        "calendar_event_links": {
+            "link_id", "user_id", "activity_type", "activity_id", "google_event_id",
+            "sync_status", "last_error", "attempts", "synced_at", "created_at", "updated_at",
+        },
     }
 
     assert set(Base.metadata.tables) == set(expected_columns)

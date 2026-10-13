@@ -12,6 +12,7 @@ import {
   generateMeetingBrief,
   getAgentPolicies,
   getAgentTasks,
+  getLatestConversation,
   getCurrentUser,
   getCustomerActivity,
   getCustomerOverview,
@@ -27,6 +28,7 @@ import {
 } from "./api.js";
 import {
   displayValue,
+  formatNumber,
   element,
   formatDate,
   humanize,
@@ -84,32 +86,50 @@ let isSavingActivity = false;
 let aiSummary = null;
 let aiSummaryError = "";
 let aiSummaryLoading = false;
+// The generated summary can be folded away so it never crowds the customer record.
+let aiSummaryCollapsed = false;
 let meetingBriefLoadingId = null;
 let agentChatMessages = [];
+// Server-issued ID of this user's conversation with the selected customer.
+let agentConversationId = null;
+// Unsent chat text; the panel is rebuilt on every state change.
+let agentChatDraft = "";
 let agentChatLoading = false;
 let agentActionLoading = false;
 let pendingAgentAction = null;
 let agentClarificationTask = null;
+let agentScheduleAlternatives = [];
+let agentScheduleReason = null;
+// The scheduling request behind the chat buttons: { taskId, action, values }.
+let agentScheduleDraft = null;
 let agentActionNotice = "";
+let customerListRequest = 0;
 let hitlTasks = [];
 let hitlBusy = false;
 let hitlIsAdmin = false;
 let hitlPolicyModes = {};
 
 function resetCustomerAiState({ cancelPending = true } = {}) {
-  if (cancelPending && pendingAgentAction?.action_id) {
+  // Task proposals stay listed under Agent approvals, so only ad-hoc chat proposals are cancelled.
+  if (cancelPending && pendingAgentAction?.action_id && !pendingAgentAction.fromTask) {
     const staleActionId = pendingAgentAction.action_id;
     void cancelAgentAction(staleActionId).catch(() => {});
   }
   aiSummary = null;
   aiSummaryError = "";
   aiSummaryLoading = false;
+  aiSummaryCollapsed = false;
   meetingBriefLoadingId = null;
   agentChatMessages = [];
+  agentConversationId = null;
+  agentChatDraft = "";
   agentChatLoading = false;
   agentActionLoading = false;
   pendingAgentAction = null;
   agentClarificationTask = null;
+  agentScheduleAlternatives = [];
+  agentScheduleReason = null;
+  agentScheduleDraft = null;
   agentActionNotice = "";
   if (meetingBriefDialog?.open) {
     meetingBriefDialog.close();
@@ -180,6 +200,8 @@ function renderCustomerList(data) {
 
 async function loadCustomers(page = 1) {
   currentPage = page;
+  // Only the newest request may render, so overlapping loads never show stale rows.
+  const requestId = ++customerListRequest;
   showSearchState("Loading customers...");
   try {
     const data = await getCustomers({
@@ -187,9 +209,9 @@ async function loadCustomers(page = 1) {
       page: currentPage,
       page_size: PAGE_SIZE,
     });
-    renderCustomerList(data);
+    if (requestId === customerListRequest) renderCustomerList(data);
   } catch {
-    showSearchState("Unable to load customer data.", true);
+    if (requestId === customerListRequest) showSearchState("Unable to load customer data.", true);
   }
 }
 
@@ -772,7 +794,8 @@ async function submitHitlInputs(taskId, operationIndex, values, formError, actio
   } catch (error) {
     formError.replaceChildren(element("span", "", error.message || "Unable to save task details."));
     const suggestions = error.data?.error?.details?.suggestions;
-    preserveForm = error.code === "schedule_conflict";
+    const unavailable = error.code === "schedule_conflict" || error.code === "schedule_in_past";
+    preserveForm = unavailable;
     const scheduleField = action === "create_meeting"
       ? "scheduled_at"
       : action === "schedule_call"
@@ -780,7 +803,7 @@ async function submitHitlInputs(taskId, operationIndex, values, formError, actio
         : action === "create_followup"
           ? "due_date"
           : null;
-    if (error.code === "schedule_conflict" && scheduleField && Array.isArray(suggestions)) {
+    if (unavailable && scheduleField && Array.isArray(suggestions)) {
       for (const suggestion of suggestions) {
         if (!suggestion?.starts_at || !suggestion?.timezone) continue;
         const button = element(
@@ -974,6 +997,8 @@ function appendAgentChat(parent, customer) {
   );
   const messages = element("div", "agent-chat-messages");
   messages.setAttribute("aria-live", "polite");
+  messages.dataset.customerId = String(customer.customer_id);
+  messages.dataset.count = String(agentChatMessages.length);
   for (const item of agentChatMessages) {
     const message = element("div", `agent-chat-message agent-chat-${item.role}`);
     if (item.role === "assistant") {
@@ -995,18 +1020,77 @@ function appendAgentChat(parent, customer) {
   if (pendingAgentAction) {
     appendPendingActionCard(chat, pendingAgentAction, customer);
   }
-  if (agentClarificationTask) {
-    chat.append(renderHitlTask(agentClarificationTask));
+  // Full task forms live in the Agent approvals panel; chat only links to them.
+  if (
+    agentClarificationTask?.status === "collecting_information"
+    && !agentScheduleDraft
+  ) {
+    const actions = element("div", "agent-action-buttons");
+    const button = element("button", "button button-secondary", "Add the missing details");
+    button.type = "button";
+    button.addEventListener("click", openHitlPanel);
+    actions.append(button);
+    chat.append(actions);
+  }
+  if (agentScheduleDraft && !pendingAgentAction && agentScheduleAlternatives.length) {
+    const alternatives = element("div", "agent-action-buttons");
+    alternatives.setAttribute("aria-label", "Available alternative times");
+    for (const suggestion of agentScheduleAlternatives) {
+      if (!suggestion?.starts_at || !suggestion?.timezone) continue;
+      const button = element(
+        "button",
+        "button button-secondary schedule-suggestion",
+        `Use ${formatDateTime(suggestion.starts_at, suggestion.timezone)} (${suggestion.timezone})`,
+      );
+      button.type = "button";
+      button.disabled = agentChatLoading;
+      button.addEventListener("click", () => {
+        void chooseAgentScheduleAlternative(suggestion);
+      });
+      alternatives.append(button);
+    }
+    chat.append(alternatives);
+  }
+  if (
+    agentScheduleDraft
+    && agentScheduleReason === "past"
+    && !pendingAgentAction
+    && !agentScheduleAlternatives.length
+  ) {
+    const label = { create_meeting: "meeting", schedule_call: "call", create_followup: "follow-up" }[agentScheduleDraft.action];
+    if (label) {
+      const actions = element("div", "agent-action-buttons");
+      const button = element("button", "button button-primary", `Schedule a new ${label}`);
+      button.type = "button";
+      button.disabled = agentChatLoading;
+      button.addEventListener("click", () => {
+        void requestNewScheduleTimes();
+      });
+      actions.append(button);
+      chat.append(actions);
+    }
   }
 
   const form = element("form", "agent-chat-form");
   const input = element("textarea", "agent-chat-input");
   input.name = "message";
-  input.rows = 2;
+  input.rows = 1;
   input.maxLength = 4000;
-  input.placeholder = "Ask a question or request an action…";
+  input.placeholder = "Ask a question or request an action… (Shift+Enter for a new line)";
   input.required = true;
+  input.value = agentChatDraft;
   input.disabled = agentChatLoading || Boolean(pendingAgentAction);
+  input.addEventListener("input", () => {
+    agentChatDraft = input.value;
+    autosizeChatInput(input);
+  });
+  input.addEventListener("keydown", (event) => {
+    // Enter sends; Shift+Enter adds a line; never interrupt IME composition.
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
   const submit = element(
     "button",
     "button button-primary",
@@ -1019,6 +1103,7 @@ function appendAgentChat(parent, customer) {
     event.preventDefault();
     const message = input.value.trim();
     if (message && !agentChatLoading && !pendingAgentAction) {
+      agentChatDraft = "";
       void sendAgentChatMessage(message, customer.customer_id);
     }
   });
@@ -1026,26 +1111,58 @@ function appendAgentChat(parent, customer) {
   parent.append(chat);
 }
 
+const CHAT_INPUT_MAX_HEIGHT = 160;
+
+// Grows the prompt with its content up to a cap, then scrolls inside it.
+function autosizeChatInput(input) {
+  input.style.height = "auto";
+  const height = Math.min(input.scrollHeight + 2, CHAT_INPUT_MAX_HEIGHT);
+  input.style.height = `${height}px`;
+  input.style.overflowY = input.scrollHeight + 2 > CHAT_INPUT_MAX_HEIGHT ? "auto" : "hidden";
+}
+
+// Captures the chat log and prompt before renderCustomer() rebuilds them.
+function captureChatView(customerId) {
+  const log = detailPanel.querySelector(".agent-chat-messages");
+  const input = detailPanel.querySelector(".agent-chat-input");
+  return {
+    log: log && log.dataset.customerId === String(customerId)
+      ? {
+        top: log.scrollTop,
+        count: Number(log.dataset.count),
+        atBottom: log.scrollHeight - log.scrollTop - log.clientHeight < 24,
+      }
+      : null,
+    inputFocused: Boolean(input) && document.activeElement === input,
+    selection: input ? [input.selectionStart, input.selectionEnd] : null,
+  };
+}
+
+function restoreChatView(view) {
+  const log = detailPanel.querySelector(".agent-chat-messages");
+  if (log) {
+    const grew = !view.log || agentChatMessages.length > view.log.count;
+    const lastIsUser = agentChatMessages.at(-1)?.role === "user";
+    // Follow new messages only when the reader was already at the latest one,
+    // or just sent it; otherwise keep their place in older history.
+    log.scrollTop = grew && (!view.log || view.log.atBottom || lastIsUser)
+      ? log.scrollHeight
+      : view.log.top;
+  }
+  const input = detailPanel.querySelector(".agent-chat-input");
+  if (input) {
+    autosizeChatInput(input);
+    if (view.inputFocused && !input.disabled) {
+      input.focus({ preventScroll: true });
+      if (view.selection) input.setSelectionRange(...view.selection);
+    }
+  }
+}
+
 function appendPendingActionCard(parent, pending, customer) {
   const card = element("section", "agent-pending-action");
   card.setAttribute("aria-label", "Confirm proposed CRM action");
-  card.append(
-    element("p", "eyebrow", "AI ACTION — CONFIRMATION REQUIRED"),
-    element("h4", "", agentActionLabels[pending.action] || "CRM action"),
-  );
-  const payload = pending.payload || {};
-  const details = element("dl", "agent-action-details");
-  for (const [name, value] of Object.entries(payload)) {
-    const row = element("div");
-    row.append(
-      element("dt", "", name),
-      element("dd", "", typeof value === "object" && value !== null
-        ? JSON.stringify(value)
-        : displayValue(value)),
-    );
-    details.append(row);
-  }
-  card.append(details);
+  card.append(element("h4", "", `Confirm: ${agentActionLabels[pending.action] || "CRM action"}`));
   const actions = element("div", "agent-action-buttons");
   const confirm = element(
     "button",
@@ -1063,13 +1180,7 @@ function appendPendingActionCard(parent, pending, customer) {
   cancel.addEventListener("click", () => {
     void cancelPendingAgentAction();
   });
-  const reject = element("button", "button button-secondary", "Reject");
-  reject.type = "button";
-  reject.disabled = agentActionLoading;
-  reject.addEventListener("click", () => {
-    void rejectPendingAgentAction();
-  });
-  actions.append(confirm, reject, cancel);
+  actions.append(confirm, cancel);
   card.append(actions);
   parent.append(card);
 }
@@ -1080,21 +1191,215 @@ async function sendAgentChatMessage(message, customerId) {
   agentActionNotice = "";
   renderCustomer(selectedCustomer);
   try {
-    const response = await chatWithAgent(message, customerId);
+    const response = await chatWithAgent(message, customerId, agentConversationId);
     if (String(selectedCustomerId) !== String(customerId)) return;
+    agentConversationId = response.conversation_id || agentConversationId;
     agentChatMessages.push({ role: "assistant", text: response.response });
     pendingAgentAction = response.pending_action || null;
     agentClarificationTask = response.clarification_task || null;
+    agentScheduleAlternatives = response.schedule_alternatives || [];
+    agentScheduleReason = response.schedule_reason || null;
+    const scheduleOperation = agentClarificationTask?.operations?.[0];
+    agentScheduleDraft = agentScheduleReason && scheduleOperation
+      ? {
+        taskId: agentClarificationTask.task_id,
+        action: scheduleOperation.action,
+        values: taskInputValues(scheduleOperation.action, scheduleOperation.values),
+      }
+      : null;
     if (agentClarificationTask) {
       hitlTasks = await getAgentTasks();
       renderHitlTasks(hitlTasks);
     }
   } catch (error) {
     if (String(selectedCustomerId) !== String(customerId)) return;
+    if (error?.code === "conversation_not_found") agentConversationId = null;
     agentChatMessages.push({
       role: "assistant",
-      text: aiErrorMessage(error),
+      text: error?.code === "conversation_not_found"
+        ? "This conversation is no longer available. Your next message starts a new one."
+        : aiErrorMessage(error),
     });
+  } finally {
+    agentChatLoading = false;
+    if (selectedCustomer) renderCustomer(selectedCustomer);
+  }
+}
+
+function scheduleValuesFromSuggestion(action, suggestion) {
+  // starts_at is local to suggestion.timezone, so its date/time text is wall-clock time.
+  if (action === "create_meeting") {
+    return {
+      scheduled_date: suggestion.starts_at.slice(0, 10),
+      scheduled_time: suggestion.starts_at.slice(11, 16),
+      scheduled_timezone: suggestion.timezone,
+      scheduled_time_occurrence: null,
+    };
+  }
+  if (action === "schedule_call") {
+    return {
+      scheduled_at: suggestion.starts_at,
+      scheduled_timezone: suggestion.timezone,
+      scheduled_time_occurrence: null,
+    };
+  }
+  if (action === "create_followup") {
+    return {
+      due_date: suggestion.starts_at,
+      due_timezone: suggestion.timezone,
+      due_time_occurrence: null,
+    };
+  }
+  return null;
+}
+
+// A complete meeting task reports proposal values (scheduled_at); creating a
+// replacement task needs the task form's local scheduled_date/scheduled_time.
+function taskInputValues(action, values) {
+  if (action !== "create_meeting" || !values?.scheduled_at) return values;
+  const { scheduled_at: scheduledAt, ...rest } = values;
+  const parts = zonedDateTimeParts(scheduledAt, values.scheduled_timezone || "UTC");
+  return {
+    ...rest,
+    scheduled_date: `${parts.year}-${parts.month}-${parts.day}`,
+    scheduled_time: `${parts.hour}:${parts.minute}`,
+  };
+}
+
+function scrollToElement(target) {
+  const reduceMotion = document.documentElement.dataset.motion === "reduce"
+    || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  target.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+}
+
+function openHitlPanel() {
+  if (toggleHitlButton.getAttribute("aria-expanded") !== "true") toggleHitlButton.click();
+  scrollToElement(hitlContent.closest(".hitl-panel"));
+}
+
+// A deep link scrolls as soon as the page starts, but the customer list, the linked
+// customer and the task list then render above or inside the panel and push it down.
+// Scroll once more when those loads settle, unless the user has already moved.
+function followApprovalsLinkAfter(loads) {
+  let userMoved = false;
+  const markMoved = () => {
+    userMoved = true;
+  };
+  const events = ["wheel", "touchmove", "keydown", "pointerdown"];
+  for (const name of events) window.addEventListener(name, markMoved, { passive: true });
+  void Promise.allSettled(loads).then(() => {
+    for (const name of events) window.removeEventListener(name, markMoved);
+    if (userMoved || window.location.hash !== "#approvals") return;
+    openHitlPanel();
+    // Start keyboard navigation from the panel the link pointed to.
+    document.querySelector("#hitl-heading")?.focus({ preventScroll: true });
+  });
+}
+
+const SUBMITTED_TASK_STATUSES = new Set(["awaiting_approval", "executing", "completed"]);
+
+// Sends a scheduling choice through the task lifecycle the task is actually in:
+// an open task takes the input; a submitted task is never resubmitted (no duplicate
+// proposals); an expired, cancelled, rejected, failed or missing task is replaced by
+// a fresh task built from the original request, so the conversation can continue.
+async function submitScheduleChoice(values) {
+  const draft = agentScheduleDraft;
+  let task = await resumeAgentTask(draft.taskId).catch(() => null);
+  if (task?.status === "collecting_information") {
+    try {
+      return await submitAgentTaskInput(task.task_id, 0, values);
+    } catch (error) {
+      if (error.code !== "invalid_task_transition" && error.code !== "task_expired") throw error;
+      task = await resumeAgentTask(draft.taskId).catch(() => null);
+    }
+  }
+  if (task && SUBMITTED_TASK_STATUSES.has(task.status)) return task;
+  return createAgentTask([{ action: draft.action, values: { ...draft.values, ...values } }]);
+}
+
+// Shows the outcome of a scheduling choice: a compact confirmation card for a
+// proposal awaiting approval, or a short status message otherwise.
+function applyScheduleTask(task) {
+  agentClarificationTask = task;
+  agentScheduleDraft = { ...agentScheduleDraft, taskId: task.task_id };
+  agentScheduleAlternatives = [];
+  agentScheduleReason = null;
+  const operation = task.operations?.[0];
+  if (task.status === "awaiting_approval" && operation?.action_id) {
+    pendingAgentAction = {
+      action_id: operation.action_id,
+      action: operation.action,
+      payload: operation.values,
+      fromTask: true,
+    };
+  } else if (task.status === "completed") {
+    agentActionNotice = "This request was already completed.";
+  } else if (task.status === "collecting_information") {
+    agentActionNotice = "Some details are still missing. Add them under Agent approvals.";
+  } else {
+    agentActionNotice = task.message;
+  }
+}
+
+async function requestNewScheduleTimes() {
+  if (!agentScheduleDraft || agentChatLoading) return;
+  const customerId = selectedCustomerId;
+  agentChatLoading = true;
+  agentActionNotice = "";
+  renderCustomer(selectedCustomer);
+  try {
+    // The unchanged past time is rejected server-side with checked future alternatives.
+    const task = await submitScheduleChoice({});
+    if (String(selectedCustomerId) !== String(customerId)) return;
+    applyScheduleTask(task);
+  } catch (error) {
+    if (String(selectedCustomerId) !== String(customerId)) return;
+    const suggestions = error.data?.error?.details?.suggestions;
+    if (error.code === "schedule_in_past" && Array.isArray(suggestions)) {
+      agentScheduleReason = null;
+      agentScheduleAlternatives = suggestions;
+      agentActionNotice = suggestions.length
+        ? "Choose an available future time."
+        : "No available future times were found. Ask the assistant for a different day.";
+    } else {
+      agentActionNotice = aiErrorMessage(error);
+    }
+  } finally {
+    agentChatLoading = false;
+    if (selectedCustomer) renderCustomer(selectedCustomer);
+  }
+}
+
+async function chooseAgentScheduleAlternative(suggestion) {
+  const values = scheduleValuesFromSuggestion(agentScheduleDraft?.action, suggestion);
+  if (!values || agentChatLoading) return;
+  const customerId = selectedCustomerId;
+  agentChatLoading = true;
+  agentActionNotice = "";
+  renderCustomer(selectedCustomer);
+  try {
+    // The server rechecks availability before creating the approval proposal.
+    const task = await submitScheduleChoice(values);
+    if (String(selectedCustomerId) !== String(customerId)) return;
+    agentChatMessages.push({
+      role: "assistant",
+      text: `Selected ${formatDateTime(suggestion.starts_at, suggestion.timezone)} (${suggestion.timezone}).`,
+    });
+    applyScheduleTask(task);
+    hitlTasks = await getAgentTasks();
+    renderHitlTasks(hitlTasks);
+  } catch (error) {
+    if (String(selectedCustomerId) !== String(customerId)) return;
+    const freshSuggestions = error.data?.error?.details?.suggestions;
+    const unavailable = error.code === "schedule_conflict" || error.code === "schedule_in_past";
+    agentScheduleAlternatives = unavailable && Array.isArray(freshSuggestions)
+      ? freshSuggestions
+      : [];
+    agentActionNotice = unavailable
+      ? (agentScheduleAlternatives.length
+        ? "That time is no longer available. Choose another alternative."
+        : "That time is no longer available, and no alternatives were found. Ask the assistant for a different day.")
+      : aiErrorMessage(error);
   } finally {
     agentChatLoading = false;
     if (selectedCustomer) renderCustomer(selectedCustomer);
@@ -1153,27 +1458,9 @@ async function cancelPendingAgentAction() {
   }
 }
 
-async function rejectPendingAgentAction() {
-  if (!pendingAgentAction || agentActionLoading) return;
-  const actionId = pendingAgentAction.action_id;
-  agentActionLoading = true;
-  agentActionNotice = "";
-  renderCustomer(selectedCustomer);
-  try {
-    const result = await rejectAgentAction(actionId);
-    pendingAgentAction = null;
-    agentChatMessages.push({ role: "assistant", text: result.message });
-    await refreshHitlTasks();
-  } catch (error) {
-    agentActionNotice = aiErrorMessage(error);
-  } finally {
-    agentActionLoading = false;
-    if (selectedCustomer) renderCustomer(selectedCustomer);
-  }
-}
-
 function appendAiIntelligence(parent, customer) {
   const section = appendSection(parent, "AI customer intelligence");
+  section.id = "customer-assistant";
   const panel = element("div", "ai-intelligence");
   const actions = element("div", "ai-actions");
   const summaryButton = makeActionButton(
@@ -1196,6 +1483,12 @@ function appendAiIntelligence(parent, customer) {
   } else if (aiSummaryError) {
     panel.append(element("p", "detail-api-error", aiSummaryError));
   } else if (aiSummary) {
+    const disclosure = element("details", "disclosure ai-summary");
+    disclosure.open = !aiSummaryCollapsed;
+    disclosure.addEventListener("toggle", () => {
+      aiSummaryCollapsed = !disclosure.open;
+    });
+    disclosure.append(element("summary", "ai-summary-toggle", "AI summary"));
     const output = element("div", "ai-output");
     const summaryBlock = element("div", "ai-block ai-facts");
     summaryBlock.append(element("h4", "", "Customer summary"));
@@ -1218,7 +1511,8 @@ function appendAiIntelligence(parent, customer) {
     if (aiSummary.generated_at) {
       output.append(element("p", "ai-generated", `Generated ${formatDateTime(aiSummary.generated_at)}`));
     }
-    panel.append(output);
+    disclosure.append(output);
+    panel.append(disclosure);
   } else {
     panel.append(element("p", "ai-status", "Generate a summary from this customer's CRM records."));
   }
@@ -1340,6 +1634,7 @@ async function prepareMeeting(meetingId) {
 function appendActivities(parent, customer) {
   const meetings = Array.isArray(customer.meetings) ? customer.meetings : [];
   const meetingSection = appendSection(parent, "Meetings", meetings.length);
+  meetingSection.id = "customer-activity";
   meetingSection.querySelector(".detail-section-heading").append(
     makeActionButton("Schedule meeting", "small-action-button", () => openActivityDialog("meeting")),
   );
@@ -1506,6 +1801,7 @@ async function refreshSelectedCustomer() {
 }
 
 function renderCustomer(customer) {
+  const chatView = captureChatView(customer.customer_id);
   selectedCustomer = customer;
   detailPanel.replaceChildren();
   const content = element("div", "detail-content");
@@ -1522,7 +1818,18 @@ function renderCustomer(customer) {
   hero.append(headingGroup, element("span", statusClass(customer.status), humanize(customer.status)));
   content.append(hero);
 
+  const jump = element("nav", "detail-jump");
+  jump.setAttribute("aria-label", "Customer sections");
+  for (const [label, id] of [["Overview", "customer-overview"], ["Assistant", "customer-assistant"], ["Activity", "customer-activity"]]) {
+    jump.append(makeActionButton(label, "detail-jump-link", () => {
+      const target = document.getElementById(id);
+      if (target) scrollToElement(target);
+    }));
+  }
+  content.append(jump);
+
   const profile = appendSection(content, "Customer profile");
+  profile.id = "customer-overview";
   appendInfoGrid(profile, [
     ["Status", humanize(customer.status)],
     ["Sales stage", humanize(customer.sales_stage)],
@@ -1603,7 +1910,7 @@ function renderCustomer(customer) {
       const meta = element("div", "enquiry-meta");
       meta.append(
         element("span", "meta-pill", `${humanize(enquiry.priority)} priority`),
-        element("span", "meta-pill", `Estimated value: ${displayValue(enquiry.estimated_value, "Not set")}`),
+        element("span", "meta-pill", `Estimated value: ${formatNumber(enquiry.estimated_value)}`),
       );
       card.append(meta);
       list.append(card);
@@ -1613,6 +1920,7 @@ function renderCustomer(customer) {
   appendAiIntelligence(content, customer);
   appendActivities(content, customer);
   detailPanel.append(content);
+  restoreChatView(chatView);
 }
 
 async function selectCustomer(customerId) {
@@ -1630,6 +1938,22 @@ async function selectCustomer(customerId) {
     await refreshSelectedCustomer();
   } catch {
     setDetailMessage("Unable to load customer data.", { error: true });
+    return;
+  }
+  await restoreAgentConversation(customerId);
+}
+
+// Restores this user's latest chat with the customer; a failure leaves an empty chat.
+async function restoreAgentConversation(customerId) {
+  try {
+    const conversation = await getLatestConversation(customerId);
+    if (String(selectedCustomerId) !== String(customerId) || !conversation) return;
+    if (agentChatMessages.length || agentChatLoading) return; // Never overwrite a chat already in progress.
+    agentConversationId = conversation.conversation_id;
+    agentChatMessages = conversation.messages.map((item) => ({ role: item.role, text: item.content }));
+    if (selectedCustomer) renderCustomer(selectedCustomer);
+  } catch {
+    // History is a convenience; the chat still works without it.
   }
 }
 
@@ -2206,7 +2530,11 @@ searchForm.addEventListener("submit", (event) => {
 
 resultList.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-customer-id]");
-  if (button) selectCustomer(button.dataset.customerId);
+  if (!button) return;
+  // Stacked layout: the details render below the list, so bring them into view once loaded.
+  void selectCustomer(button.dataset.customerId).then(() => {
+    if (window.matchMedia("(max-width: 780px)").matches) scrollToElement(detailPanel);
+  });
 });
 
 previousPage.addEventListener("click", () => {
@@ -2228,15 +2556,22 @@ meetingBriefDialog.addEventListener("click", (event) => {
 
 mountAuthControls();
 if (requireAuth()) {
-  void initializeHitl();
+  const hitlReady = initializeHitl();
+  // The sidebar's "Approvals" item and dashboard task suggestions link here.
+  const linkedToApprovals = window.location.hash === "#approvals";
+  if (linkedToApprovals) openHitlPanel();
+  window.addEventListener("hashchange", () => {
+    if (window.location.hash === "#approvals") openHitlPanel();
+  });
   const initialParams = new URLSearchParams(window.location.search);
   const linkedCustomerId = initialParams.get("customer_id");
+  const initialLoad = loadCustomers(1);
+  let customerReady = initialLoad;
   if (linkedCustomerId && /^\d+$/.test(linkedCustomerId)) {
     setDetailMessage("Loading customer...", { loading: true });
-    loadCustomers(1).then(() => {
-      selectCustomer(linkedCustomerId);
-    });
+    customerReady = initialLoad.then(() => selectCustomer(linkedCustomerId));
   } else {
-    setDetailMessage("Search for a customer to view their information.");
+    setDetailMessage("Select a customer from the list or search to view their information.");
   }
+  if (linkedToApprovals) followApprovalsLinkAfter([hitlReady, customerReady]);
 }

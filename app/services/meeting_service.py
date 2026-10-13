@@ -17,6 +17,7 @@ from app.services.scheduling_service import (
     ScheduleRequest,
     lock_workspace_schedule,
     require_available,
+    require_future_start,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,16 +39,15 @@ def create_meeting(
                 enquiry_id=data.enquiry_id,
             )
             if data.status == "scheduled":
-                require_available(
-                    db,
-                    ScheduleRequest(
-                        activity_type="meeting",
-                        starts_at=data.scheduled_at,
-                        duration_minutes=data.duration
-                        or settings.scheduling_meeting_default_duration_minutes,
-                        timezone_name=data.scheduled_timezone or "UTC",
-                    ),
+                schedule = ScheduleRequest(
+                    activity_type="meeting",
+                    starts_at=data.scheduled_at,
+                    duration_minutes=data.duration
+                    or settings.scheduling_meeting_default_duration_minutes,
+                    timezone_name=data.scheduled_timezone or "UTC",
                 )
+                require_future_start(db, schedule)
+                require_available(db, schedule)
             values = data.model_dump()
             values["scheduled_at"] = normalize_utc_datetime(data.scheduled_at)
             values["duration"] = (
@@ -116,16 +116,20 @@ def update_meeting(db: Session, meeting_id: int, data: MeetingUpdate) -> Meeting
                 "scheduled_timezone", meeting.scheduled_timezone or "UTC"
             )
             if target_status == "scheduled":
-                require_available(
-                    db,
-                    ScheduleRequest(
-                        activity_type="meeting",
-                        starts_at=scheduled_at,
-                        duration_minutes=duration,
-                        timezone_name=scheduled_timezone,
-                        exclude_id=meeting.meeting_id,
-                    ),
+                schedule = ScheduleRequest(
+                    activity_type="meeting",
+                    starts_at=scheduled_at,
+                    duration_minutes=duration,
+                    timezone_name=scheduled_timezone,
+                    exclude_id=meeting.meeting_id,
                 )
+                # Untouched past meetings stay editable; new or reopened times must be future.
+                if (
+                    meeting.status != "scheduled"
+                    or scheduled_at != normalize_utc_datetime(meeting.scheduled_at)
+                ):
+                    require_future_start(db, schedule)
+                require_available(db, schedule)
             updates["duration"] = duration
             customer_id = updates.get("customer_id", meeting.customer_id)
             validate_customer_references(

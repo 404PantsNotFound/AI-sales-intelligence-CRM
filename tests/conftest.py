@@ -27,6 +27,20 @@ from app.models import (
 
 TEST_USER_PASSWORD = "TestPassword123!"
 TEST_USER_PASSWORD_HASH = hash_password(TEST_USER_PASSWORD)
+# Test data uses fixed 2026 dates, so scheduling "now" (past-time checks and
+# suggestions) is pinned instead of following the real clock.
+FROZEN_SCHEDULING_NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
+
+
+class _FrozenSchedulingClock(datetime):
+    @classmethod
+    def now(cls, tz=None):  # type: ignore[override]
+        return FROZEN_SCHEDULING_NOW if tz else FROZEN_SCHEDULING_NOW.replace(tzinfo=None)
+
+
+@pytest.fixture(autouse=True)
+def freeze_scheduling_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.services.scheduling_service.datetime", _FrozenSchedulingClock)
 
 
 @pytest.fixture(autouse=True)

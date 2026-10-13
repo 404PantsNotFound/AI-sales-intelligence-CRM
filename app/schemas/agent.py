@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -14,6 +15,8 @@ class AgentChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     customer_id: int | None = Field(default=None, ge=1)
     timezone_name: str | None = None
+    # Omitted to start a new conversation; otherwise one the server issued to this user.
+    conversation_id: UUID | None = None
 
     @field_validator("timezone_name", mode="after")
     @classmethod
@@ -119,6 +122,23 @@ class AgentChatResponse(BaseModel):
     tool_calls: list[AgentToolCall]
     pending_action: PendingAgentAction | None = None
     clarification_task: AgentTaskResponse | None = None
+    # Slots from the availability check that rejected the requested time.
+    schedule_alternatives: list[dict[str, Any]] = Field(default_factory=list)
+    # Why clarification_task was raised for a schedule: a conflict or a past time.
+    schedule_reason: Literal["conflict", "past"] | None = None
+    conversation_id: str | None = None
+
+
+class AgentConversationMessageResponse(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    created_at: datetime
+
+
+class AgentConversationResponse(BaseModel):
+    conversation_id: str
+    customer_id: int | None
+    messages: list[AgentConversationMessageResponse]
 
 
 class CustomerSummaryOutput(BaseModel):

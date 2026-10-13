@@ -82,7 +82,7 @@ def activity_client(
 
 @pytest.fixture
 def activity_records(activity_sessions: sessionmaker[Session]) -> dict[str, int]:
-    created_at = datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc)
+    created_at = datetime(2030, 10, 1, 9, 0, tzinfo=timezone.utc)
     with activity_sessions() as db:
         first_company = Company(company_name="First Company")
         second_company = Company(company_name="Second Company")
@@ -131,13 +131,13 @@ def activity_records(activity_sessions: sessionmaker[Session]) -> dict[str, int]
         db.flush()
         meeting = Meeting(
             customer=first_customer,
-            scheduled_at=datetime(2026, 10, 2, 10, 0, tzinfo=timezone.utc),
+            scheduled_at=datetime(2030, 10, 2, 10, 0, tzinfo=timezone.utc),
             status="scheduled",
             agenda="Initial meeting",
         )
         call = Call(
             customer=first_customer,
-            scheduled_at=datetime(2026, 10, 3, 11, 0, tzinfo=timezone.utc),
+            scheduled_at=datetime(2030, 10, 3, 11, 0, tzinfo=timezone.utc),
             status="scheduled",
             call_type="Discovery",
             notes="Call notes",
@@ -147,7 +147,7 @@ def activity_records(activity_sessions: sessionmaker[Session]) -> dict[str, int]
         followup = FollowUp(
             customer=first_customer,
             type="email",
-            due_date=datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc),
+            due_date=datetime(2030, 10, 4, 12, 0, tzinfo=timezone.utc),
             status="pending",
             description="Send proposal",
         )
@@ -178,7 +178,7 @@ def test_meeting_create_get_update_and_customer_list(
             "customer_id": customer_id,
             "contact_id": activity_records["contact"],
             "enquiry_id": activity_records["enquiry"],
-            "scheduled_at": "2026-10-07T10:30:00Z",
+            "scheduled_at": "2030-10-07T10:30:00Z",
             "duration": 30,
             "agenda": "Discuss proposal",
         },
@@ -203,7 +203,7 @@ def test_meeting_partial_update_preserves_saved_timezone_and_instant(
     activity_records: dict[str, int],
 ) -> None:
     meeting_id = activity_records["meeting"]
-    original_instant = datetime(2026, 10, 2, 10, 0)
+    original_instant = datetime(2030, 10, 2, 10, 0)
     with activity_sessions() as db:
         meeting = db.get(Meeting, meeting_id)
         assert meeting is not None
@@ -216,7 +216,7 @@ def test_meeting_partial_update_preserves_saved_timezone_and_instant(
     )
 
     assert response.status_code == 200
-    assert response.json()["scheduled_at"] == "2026-10-02T14:00:00+04:00"
+    assert response.json()["scheduled_at"] == "2030-10-02T14:00:00+04:00"
     assert response.json()["scheduled_timezone"] == "Asia/Dubai"
     with activity_sessions() as db:
         meeting = db.get(Meeting, meeting_id)
@@ -242,7 +242,7 @@ def test_meeting_rejects_missing_or_foreign_records(
 ) -> None:
     payload: dict[str, Any] = {
         "customer_id": activity_records["customer"],
-        "scheduled_at": "2026-10-07T10:30:00Z",
+        "scheduled_at": "2030-10-07T10:30:00Z",
     }
     payload[field] = activity_records[value] if isinstance(value, str) else value
     response = activity_client.post("/api/meetings", json=payload)
@@ -253,7 +253,7 @@ def test_meeting_rejects_missing_or_foreign_records(
 def test_meeting_duration_and_status_validation(activity_client: TestClient, activity_records: dict[str, int]) -> None:
     base = {
         "customer_id": activity_records["customer"],
-        "scheduled_at": "2026-10-07T10:30:00Z",
+        "scheduled_at": "2030-10-07T10:30:00Z",
     }
     assert activity_client.post("/api/meetings", json={**base, "duration": 0}).status_code == 422
     assert activity_client.post("/api/meetings", json={**base, "status": "tentative"}).status_code == 422
@@ -271,7 +271,7 @@ def test_call_create_get_update_and_customer_list(
             "contact_id": activity_records["contact"],
             "enquiry_id": activity_records["enquiry"],
             "call_type": "Discovery",
-            "scheduled_at": "2026-10-05T10:00:00Z",
+            "scheduled_at": "2030-10-05T10:00:00Z",
             "status": "scheduled",
         },
     )
@@ -280,7 +280,7 @@ def test_call_create_get_update_and_customer_list(
     assert activity_client.get(f"/api/calls/{call_id}").status_code == 200
     updated = activity_client.put(
         f"/api/calls/{call_id}",
-        json={"status": "completed", "actual_time": "2026-10-05T10:15:00Z"},
+        json={"status": "completed", "actual_time": "2030-10-05T10:15:00Z"},
     )
     assert updated.status_code == 200
     assert updated.json()["status"] == "completed"
@@ -382,7 +382,7 @@ def test_contact_reassignment_is_rejected_when_meetings_or_calls_reference_it(
         json={
             "customer_id": customer_id,
             "contact_id": contact_id,
-            "scheduled_at": "2026-10-07T10:30:00Z",
+            "scheduled_at": "2030-10-07T10:30:00Z",
         },
     ).status_code == 201
     assert activity_client.post(
@@ -413,7 +413,7 @@ def test_enquiry_reassignment_is_rejected_when_activities_reference_it(
         json={
             "customer_id": customer_id,
             "enquiry_id": enquiry_id,
-            "scheduled_at": "2026-10-07T10:30:00Z",
+            "scheduled_at": "2030-10-07T10:30:00Z",
         },
     ).status_code == 201
     assert activity_client.post(
@@ -426,7 +426,7 @@ def test_enquiry_reassignment_is_rejected_when_activities_reference_it(
             "customer_id": customer_id,
             "enquiry_id": enquiry_id,
             "type": "task",
-            "due_date": "2026-10-08T12:00:00Z",
+            "due_date": "2030-10-08T12:00:00Z",
         },
     ).status_code == 201
 
@@ -527,7 +527,7 @@ def test_followup_create_get_update_and_customer_list(
         json={
             "customer_id": customer_id,
             "type": "task",
-            "due_date": "2026-10-08T12:00:00Z",
+            "due_date": "2030-10-08T12:00:00Z",
             "description": "Independent follow-up",
         },
     )
@@ -540,7 +540,7 @@ def test_followup_create_get_update_and_customer_list(
             "meeting_id": activity_records["meeting"],
             "call_id": activity_records["call"],
             "type": "email",
-            "due_date": "2026-10-09T12:00:00Z",
+            "due_date": "2030-10-09T12:00:00Z",
         },
     )
     assert linked.status_code == 201
@@ -548,7 +548,7 @@ def test_followup_create_get_update_and_customer_list(
     assert activity_client.get(f"/api/followups/{followup_id}").status_code == 200
     updated = activity_client.put(
         f"/api/followups/{followup_id}",
-        json={"status": "completed", "completed_at": "2026-10-09T13:00:00Z"},
+        json={"status": "completed", "completed_at": "2030-10-09T13:00:00Z"},
     )
     assert updated.status_code == 200
     assert updated.json()["status"] == "completed"
@@ -566,7 +566,7 @@ def test_followup_type_cannot_be_blank(
         json={
             "customer_id": activity_records["customer"],
             "type": "   ",
-            "due_date": "2026-10-08T12:00:00Z",
+            "due_date": "2030-10-08T12:00:00Z",
         },
     )
     assert response.status_code == 422
@@ -593,7 +593,7 @@ def test_followup_rejects_missing_or_foreign_records(
             "/api/meetings",
             json={
                 "customer_id": activity_records["other_customer"],
-                "scheduled_at": "2026-10-07T10:00:00Z",
+                "scheduled_at": "2030-10-07T10:00:00Z",
             },
         ).json()["meeting_id"]
         related_id = other_meeting
@@ -608,7 +608,7 @@ def test_followup_rejects_missing_or_foreign_records(
     payload: dict[str, Any] = {
         "customer_id": activity_records["customer"],
         "type": "task",
-        "due_date": "2026-10-08T12:00:00Z",
+        "due_date": "2030-10-08T12:00:00Z",
         field: related_id,
     }
     response = activity_client.post("/api/followups", json=payload)
@@ -626,7 +626,7 @@ def test_followup_update_validates_customer_ownership(
             "customer_id": activity_records["customer"],
             "enquiry_id": activity_records["enquiry"],
             "type": "email",
-            "due_date": "2026-10-10T12:00:00Z",
+            "due_date": "2030-10-10T12:00:00Z",
         },
     )
     assert created.status_code == 201
@@ -660,7 +660,7 @@ def test_activity_timeline_combines_sorts_and_filters_records(
     assert {item["activity_type"] for item in calls.json()["items"]} == {"call"}
     october = activity_client.get(
         f"/api/customers/{customer_id}/activity",
-        params={"start_date": "2026-10-03", "end_date": "2026-10-03"},
+        params={"start_date": "2030-10-03", "end_date": "2030-10-03"},
     )
     assert {item["activity_type"] for item in october.json()["items"]} == {"call"}
 
@@ -675,7 +675,7 @@ def test_activity_timeline_empty_date_validation_and_overview(
     assert empty.json() == {"items": []}
     invalid_range = activity_client.get(
         f"/api/customers/{customer_id}/activity",
-        params={"start_date": "2026-10-20", "end_date": "2026-10-01"},
+        params={"start_date": "2030-10-20", "end_date": "2030-10-01"},
     )
     assert invalid_range.status_code == 422
     invalid_date = activity_client.get(
@@ -914,7 +914,7 @@ def test_availability_api_returns_conflict_details(
         "/api/scheduling/availability",
         json={
             "activity_type": "call",
-            "starts_at": "2026-10-02T10:30:00Z",
+            "starts_at": "2030-10-02T10:30:00Z",
             "duration_minutes": 30,
             "timezone_name": "UTC",
         },
@@ -939,7 +939,7 @@ def test_meeting_create_rechecks_conflict_without_persisting(
         "/api/meetings",
         json={
             "customer_id": activity_records["customer"],
-            "scheduled_at": "2026-10-02T10:30:00Z",
+            "scheduled_at": "2030-10-02T10:30:00Z",
             "scheduled_timezone": "UTC",
             "duration": 30,
         },
@@ -965,7 +965,7 @@ def test_manual_calls_and_followups_reject_cross_type_conflicts_and_allow_resche
     activity_client: TestClient,
     activity_records: dict[str, int],
 ) -> None:
-    conflict_time = "2026-10-02T10:30:00Z"
+    conflict_time = "2030-10-02T10:30:00Z"
     call_create = activity_client.post(
         "/api/calls",
         json={
@@ -1007,7 +1007,7 @@ def test_manual_calls_and_followups_reject_cross_type_conflicts_and_allow_resche
     meeting_reschedule = activity_client.put(
         f"/api/meetings/{activity_records['meeting']}",
         json={
-            "scheduled_at": "2026-10-02T12:00:00Z",
+            "scheduled_at": "2030-10-02T12:00:00Z",
             "scheduled_timezone": "UTC",
             "duration": 30,
         },

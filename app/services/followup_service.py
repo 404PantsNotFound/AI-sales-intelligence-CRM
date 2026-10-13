@@ -17,6 +17,7 @@ from app.services.scheduling_service import (
     ScheduleRequest,
     lock_workspace_schedule,
     require_available,
+    require_future_start,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,15 +42,16 @@ def create_followup(
             active = data.status in {"pending", "in_progress", "overdue"}
             duration = data.duration or settings.scheduling_followup_default_duration_minutes
             if active:
-                require_available(
-                    db,
-                    ScheduleRequest(
-                        activity_type="followup",
-                        starts_at=data.due_date,
-                        duration_minutes=duration,
-                        timezone_name=data.due_timezone or "UTC",
-                    ),
+                schedule = ScheduleRequest(
+                    activity_type="followup",
+                    starts_at=data.due_date,
+                    duration_minutes=duration,
+                    timezone_name=data.due_timezone or "UTC",
                 )
+                # "overdue" is past-due by definition, so only new open work must be future.
+                if data.status in {"pending", "in_progress"}:
+                    require_future_start(db, schedule)
+                require_available(db, schedule)
             values = data.model_dump()
             values["duration"] = duration
             followup = FollowUp(**values)
@@ -117,18 +119,22 @@ def update_followup(db: Session, followup_id: int, data: FollowUpUpdate) -> Foll
                 duration = settings.scheduling_followup_default_duration_minutes
             target_status = updates.get("status", followup.status)
             if target_status in {"pending", "in_progress", "overdue"}:
-                require_available(
-                    db,
-                    ScheduleRequest(
-                        activity_type="followup",
-                        starts_at=due_date,
-                        duration_minutes=duration,
-                        timezone_name=updates.get(
-                            "due_timezone", followup.due_timezone or "UTC"
-                        ),
-                        exclude_id=followup.followup_id,
+                schedule = ScheduleRequest(
+                    activity_type="followup",
+                    starts_at=due_date,
+                    duration_minutes=duration,
+                    timezone_name=updates.get(
+                        "due_timezone", followup.due_timezone or "UTC"
                     ),
+                    exclude_id=followup.followup_id,
                 )
+                # Untouched past follow-ups stay editable; new or reopened due times must be future.
+                if target_status in {"pending", "in_progress"} and (
+                    followup.status not in {"pending", "in_progress", "overdue"}
+                    or due_date != normalize_utc_datetime(followup.due_date)
+                ):
+                    require_future_start(db, schedule)
+                require_available(db, schedule)
                 updates["duration"] = duration
             validate_customer_references(
                 db,

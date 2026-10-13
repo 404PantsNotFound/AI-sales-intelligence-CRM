@@ -1,3 +1,6 @@
+import json
+from typing import Any
+
 from sqlalchemy.orm import Session, sessionmaker
 from langchain_core.tools import StructuredTool
 
@@ -42,8 +45,35 @@ def build_read_only_tools(
             "db": db,
         }
 
-    return [
+    tools = [
         *build_customer_tools(**customer_kwargs),
         *build_activity_tools(**activity_kwargs),
         *build_analytics_tools(**analytics_kwargs),
     ]
+    if context is None:
+        return tools
+    return [_answer_once_per_request(tool, context) for tool in tools]
+
+
+def _answer_once_per_request(tool: StructuredTool, context: AgentToolContext) -> StructuredTool:
+    """Repeat calls with identical arguments get a pointer to the earlier result, not a re-read."""
+    func = tool.func
+    assert func is not None
+
+    def run(**kwargs: Any) -> str:
+        key = f"{tool.name}:{json.dumps(kwargs, sort_keys=True, default=str)}"
+        if key in context.retrieved_calls:
+            return json.dumps(
+                {"note": "Already retrieved in this request with the same arguments; reuse that result."}
+            )
+        result = func(**kwargs)
+        if '"error"' not in result[:10]:  # Failed reads may be retried.
+            context.retrieved_calls.add(key)
+        return result
+
+    return StructuredTool.from_function(
+        func=run,
+        name=tool.name,
+        description=tool.description,
+        args_schema=tool.args_schema,
+    )

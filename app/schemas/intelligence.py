@@ -1,0 +1,78 @@
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Literal
+
+from pydantic import BaseModel
+
+AttentionReasonCode = Literal[
+    "overdue_followup",
+    "no_recent_activity",
+    "no_next_step",
+    "high_priority",
+    "missing_value",
+]
+
+
+SuggestedActionKind = Literal["schedule_call", "create_followup", "review_followups", "review_value"]
+
+
+class SuggestedAction(BaseModel):
+    """A deterministic next step derived from an item's reason codes.
+
+    Task kinds (schedule_call, create_followup) name an existing structured-task action;
+    choosing one only prepares a draft task. Review kinds are links, never writes.
+    """
+
+    kind: SuggestedActionKind
+    category: Literal["workflow", "data_quality"]
+    label: str
+    reason_codes: list[AttentionReasonCode]
+    opens_task: bool
+    # Values taken from this enquiry's own record; never from customer-level context.
+    prefill: dict[str, int]
+    # Task field the browser fills with the user's own timezone, if any.
+    timezone_field: str | None = None
+    # Required task fields the user must enter (from the action registry).
+    user_must_provide: list[str]
+
+
+class AttentionReason(BaseModel):
+    code: AttentionReasonCode
+    detail: str
+
+
+class AttentionItem(BaseModel):
+    enquiry_id: int
+    customer_id: int
+    customer_name: str
+    company_name: str
+    product: str | None
+    status: str
+    priority: str
+    estimated_value: Decimal | None
+    enquiry_created_at: datetime
+    last_activity_at: datetime | None
+    days_since_activity: int
+    activity_measured_from: Literal["last_activity", "enquiry_created"]
+    next_step_at: datetime | None
+    overdue_followup_count: int
+    oldest_overdue_due_at: datetime | None
+    # Records linked to the customer but to no enquiry. Context only: they never add or
+    # clear a reason, because they cannot be attributed to this enquiry.
+    customer_level_last_activity_at: datetime | None
+    customer_level_next_step_at: datetime | None
+    customer_level_overdue_followup_count: int
+    customer_level_oldest_overdue_due_at: datetime | None
+    reasons: list[AttentionReason]
+    suggested_actions: list[SuggestedAction]
+
+
+class AttentionQueue(BaseModel):
+    generated_at: datetime
+    today_utc: date
+    stale_days: int
+    new_enquiry_grace_days: int
+    open_enquiries: int
+    needing_attention: int
+    ordering: list[str]
+    items: list[AttentionItem]

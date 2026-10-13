@@ -18,6 +18,7 @@ from app.schemas.scheduling import (
     ScheduleAvailabilityResponse,
 )
 from app.services.dashboard_service import get_workspace_activities
+from app.services import calendar_sync_service
 from app.services.activity_move_service import move_activity_to_date
 from app.services.scheduling_service import (
     ScheduleRequest,
@@ -85,10 +86,14 @@ def move_workspace_activity(
 ) -> ActivityMoveResponse:
     if record_id < 1:
         raise APIError("Activity id must be positive.", 422, "invalid_activity_id")
-    return move_activity_to_date(
+    response = move_activity_to_date(
         db,
         activity_type,
         record_id,
         request.target_date,
         request.target_timezone,
     )
+    calendar_sync_service.sync_activity(
+        db, "followup" if activity_type == "follow_up" else activity_type, record_id
+    )
+    return response

@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from threading import Barrier
@@ -38,6 +38,7 @@ from app.schemas.agent import AgentChatRequest
 from app.services import agent_action_service
 from app.services.agent_action_state import PendingActionStore
 from app.services.hitl_policy import set_action_policy
+from tests.conftest import FROZEN_SCHEDULING_NOW
 
 
 class ToolCallingFakeChatModel(FakeMessagesListChatModel):
@@ -96,14 +97,14 @@ def _post_meeting_proposal(
             "create_meeting",
             {
                 "customer_id": customer_id,
-                "scheduled_date": "2026-10-08",
+                "scheduled_date": "2030-10-08",
                 "scheduled_time": "15:00",
                 "duration": 60,
                 "agenda": "Discuss proposal",
             },
         ),
     )
-    return _post_chat(client, customer_id, "Schedule a meeting")
+    return _post_chat(client, customer_id, "Schedule a meeting on 2030-10-08 at 15:00")
 
 
 def _post_meeting_clarification(
@@ -119,10 +120,12 @@ def _post_meeting_clarification(
             {"customer_id": customer_id, **values},
         ),
     )
+    # The tool accepts only a time the current message states.
+    stated_time = f" at {values['scheduled_time']}" if "scheduled_time" in values else ""
     return _post_chat(
         client,
         customer_id,
-        "Set up a meeting with this customer to discuss the latest enquiry.",
+        f"Set up a meeting{stated_time} with this customer to discuss the latest enquiry.",
     )
 
 
@@ -316,13 +319,13 @@ def test_date_only_meeting_request_asks_only_for_time(
         agent_client,
         monkeypatch,
         agent_records["customer_id"],
-        {"scheduled_date": "2026-10-12", "agenda": "Discuss the latest enquiry."},
+        {"scheduled_date": "2030-10-12", "agenda": "Discuss the latest enquiry."},
     )
 
     assert response["response"] == "What time would you like to schedule the meeting?"
     assert response["clarification_task"]["operations"][0]["values"][
         "scheduled_date"
-    ] == "2026-10-12"
+    ] == "2030-10-12"
     assert response["clarification_task"]["operations"][0]["missing_fields"] == [
         "scheduled_time"
     ]
@@ -443,7 +446,7 @@ def test_meeting_clarification_resumes_to_timezone_preserving_approval(
         json={
             "operation_index": 0,
             "values": {
-                "scheduled_date": "2026-10-12",
+                "scheduled_date": "2030-10-12",
                 "scheduled_time": "15:00",
             },
         },
@@ -454,13 +457,13 @@ def test_meeting_clarification_resumes_to_timezone_preserving_approval(
     assert task_after_input["status"] == "awaiting_approval"
     operation = task_after_input["operations"][0]
     assert operation["status"] == "pending"
-    assert operation["values"]["scheduled_at"] == "2026-10-12T15:00:00+04:00"
+    assert operation["values"]["scheduled_at"] == "2030-10-12T15:00:00+04:00"
     assert operation["values"]["scheduled_timezone"] == "Asia/Dubai"
     assert _count(agent_sessions, Meeting) == before
     with agent_sessions() as db:
         proposal = db.get(HitlActionProposal, operation["action_id"])
         assert proposal is not None and proposal.status == "pending"
-        assert proposal.parameters["scheduled_at"] == "2026-10-12T15:00:00+04:00"
+        assert proposal.parameters["scheduled_at"] == "2030-10-12T15:00:00+04:00"
         assert proposal.parameters["scheduled_timezone"] == "Asia/Dubai"
         assert db.scalar(
             select(HitlExecutionAudit).where(
@@ -473,12 +476,12 @@ def test_meeting_clarification_resumes_to_timezone_preserving_approval(
     )
     assert approved.status_code == 200, approved.text
     meeting_response = approved.json()["record"]
-    assert meeting_response["scheduled_at"] == "2026-10-12T15:00:00+04:00"
+    assert meeting_response["scheduled_at"] == "2030-10-12T15:00:00+04:00"
     assert meeting_response["scheduled_timezone"] == "Asia/Dubai"
     with agent_sessions() as db:
         meeting = db.scalar(select(Meeting).order_by(Meeting.meeting_id.desc()))
         assert meeting is not None
-        assert meeting.scheduled_at == datetime(2026, 10, 12, 11, 0)
+        assert meeting.scheduled_at == datetime(2030, 10, 12, 11, 0)
         assert meeting.scheduled_timezone == "Asia/Dubai"
 
 
@@ -555,7 +558,7 @@ def test_followup_proposal_and_confirmation(
                 "customer_id": agent_records["customer_id"],
                 "enquiry_id": agent_records["enquiry_id"],
                 "type": "proposal",
-                "due_date": "2026-10-09T10:00:00+04:00",
+                "due_date": "2030-10-09T10:00:00+04:00",
                 "description": "Send the requested proposal",
             },
         ),
@@ -681,7 +684,7 @@ def test_action_rejects_unknown_customer_and_related_records(
             {
                 "customer_id": agent_records["customer_id"],
                 "contact_id": 999,
-                "scheduled_date": "2026-10-08",
+                "scheduled_date": "2030-10-08",
                 "scheduled_time": "15:00",
             },
         ),
@@ -690,7 +693,7 @@ def test_action_rejects_unknown_customer_and_related_records(
     response = _post_chat(
         agent_client,
         agent_records["customer_id"],
-        "Schedule a meeting with an unverified contact.",
+        "Schedule a meeting at 15:00 with an unverified contact.",
     )
     assert response["pending_action"] is None
     assert _count(agent_sessions, Meeting) == before
@@ -1366,3 +1369,655 @@ def test_simultaneous_claims_only_start_one_execution(
     finally:
         Base.metadata.drop_all(engine)
         engine.dispose()
+
+def test_chat_gives_model_request_timezone_and_labels_confirmation_with_offset(
+    agent_client: TestClient,
+    agent_records: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompts: list[str] = []
+    real_build = agent_action_service.build_sales_agent
+
+    class RecordingAgent:
+        def __init__(self, agent: Any) -> None:
+            self.agent = agent
+
+        def invoke(self, payload: dict[str, Any], **kwargs: Any) -> Any:
+            prompts.append(payload["messages"][0]["content"])
+            return self.agent.invoke(payload, **kwargs)
+
+    monkeypatch.setattr(
+        agent_action_service,
+        "build_sales_agent",
+        lambda *args, **kwargs: RecordingAgent(real_build(*args, **kwargs)),
+    )
+
+    proposal = _post_meeting_proposal(
+        agent_client,
+        monkeypatch,
+        agent_records["customer_id"],
+    )
+
+    assert prompts and prompts[0].startswith(
+        "Current time (UTC): 2026-10-01T00:00+00:00\n"
+        "Earlier messages in this conversation: none. This is its first message.\n"
+        "User's timezone (IANA): Asia/Dubai\n"
+    )
+    assert proposal["pending_action"]["payload"]["scheduled_timezone"] == "Asia/Dubai"
+    assert proposal["response"] == (
+        "I am ready to create meeting for 2030-10-08 15:00 Asia/Dubai (UTC+04:00). "
+        "Please confirm."
+    )
+
+
+def test_chat_conflict_returns_checked_alternatives_and_selection_rechecks(
+    agent_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+    agent_records: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    customer_id = agent_records["customer_id"]
+    busy_start = datetime(2030, 1, 10, 11, 0, tzinfo=timezone.utc)
+    with agent_sessions() as db:
+        db.add(
+            Meeting(
+                customer_id=customer_id,
+                scheduled_at=busy_start.replace(tzinfo=None),
+                duration=60,
+                status="scheduled",
+            )
+        )
+        db.commit()
+    _chat_model(
+        monkeypatch,
+        _tool_call(
+            "schedule_call",
+            {
+                "customer_id": customer_id,
+                "scheduled_at": "2030-01-10T15:00:00+04:00",
+                "scheduled_timezone": "Asia/Dubai",
+                "duration": 30,
+            },
+        ),
+        AIMessage(content="That time conflicts with a meeting."),
+    )
+    before_calls = _count(agent_sessions, Call)
+    before_proposals = _count(agent_sessions, HitlActionProposal)
+
+    response = _post_chat(agent_client, customer_id, "Schedule a call")
+
+    # The reply comes from the availability result, not the model's text.
+    assert response["response"] == (
+        "That time overlaps an existing scheduled meeting. No proposal was created. "
+        "Choose one of the available times below."
+    )
+    assert response["pending_action"] is None
+    task = response["clarification_task"]
+    assert task["operations"][0]["action"] == "schedule_call"
+    alternatives = response["schedule_alternatives"]
+    assert alternatives
+    for slot in alternatives:
+        assert slot["timezone"] == "Asia/Dubai"
+        start = datetime.fromisoformat(slot["starts_at"])
+        assert start >= busy_start + timedelta(minutes=60) or (
+            start + timedelta(minutes=30) <= busy_start
+        )
+    assert _count(agent_sessions, HitlActionProposal) == before_proposals
+
+    # A slot taken after it was offered is rejected with fresh alternatives.
+    stale = alternatives[0]
+    with agent_sessions() as db:
+        db.add(
+            Meeting(
+                customer_id=customer_id,
+                scheduled_at=datetime.fromisoformat(stale["starts_at"])
+                .astimezone(timezone.utc)
+                .replace(tzinfo=None),
+                duration=30,
+                status="scheduled",
+            )
+        )
+        db.commit()
+    rejected = agent_client.post(
+        f"/api/agent/tasks/{task['task_id']}/inputs",
+        json={
+            "operation_index": 0,
+            "values": {
+                "scheduled_at": stale["starts_at"],
+                "scheduled_timezone": stale["timezone"],
+                "scheduled_time_occurrence": None,
+            },
+        },
+    )
+    assert rejected.status_code == 409
+    error = rejected.json()["error"]
+    assert error["code"] == "schedule_conflict"
+    fresh = error["details"]["suggestions"]
+    assert fresh and stale["starts_at"] not in {slot["starts_at"] for slot in fresh}
+    assert _count(agent_sessions, HitlActionProposal) == before_proposals
+
+    accepted = agent_client.post(
+        f"/api/agent/tasks/{task['task_id']}/inputs",
+        json={
+            "operation_index": 0,
+            "values": {
+                "scheduled_at": fresh[0]["starts_at"],
+                "scheduled_timezone": fresh[0]["timezone"],
+                "scheduled_time_occurrence": None,
+            },
+        },
+    )
+    assert accepted.status_code == 200, accepted.text
+    updated = accepted.json()
+    assert updated["status"] == "awaiting_approval"
+    assert updated["operations"][0]["action_id"]
+    assert _count(agent_sessions, HitlActionProposal) == before_proposals + 1
+    assert _count(agent_sessions, Call) == before_calls
+
+
+PAST_AT = datetime(2026, 8, 7, 10, 45, tzinfo=timezone.utc)
+FUTURE_AT = datetime(2030, 11, 5, 10, 45, tzinfo=timezone.utc)
+SCHEDULE_CASES = {
+    "create_meeting": (Meeting, "scheduled_at", ("completed", "cancelled", "no_show")),
+    "schedule_call": (Call, "scheduled_at", ("completed", "cancelled", "missed")),
+    "create_followup": (FollowUp, "due_date", ("completed", "cancelled")),
+}
+
+
+def _schedule_args(action: str, at: datetime) -> dict[str, Any]:
+    if action == "create_meeting":
+        return {
+            "scheduled_date": at.date().isoformat(),
+            "scheduled_time": at.strftime("%H:%M"),
+            "scheduled_timezone": "UTC",
+            "agenda": "Quarterly review",
+        }
+    if action == "schedule_call":
+        return {"scheduled_at": at.isoformat(), "scheduled_timezone": "UTC", "duration": 30}
+    return {"type": "call back", "due_date": at.isoformat(), "due_timezone": "UTC"}
+
+
+def _suggestion_values(action: str, slot: dict[str, Any]) -> dict[str, Any]:
+    if action == "create_meeting":
+        return {
+            "scheduled_date": slot["starts_at"][:10],
+            "scheduled_time": slot["starts_at"][11:16],
+            "scheduled_timezone": slot["timezone"],
+            "scheduled_time_occurrence": None,
+        }
+    if action == "schedule_call":
+        return {
+            "scheduled_at": slot["starts_at"],
+            "scheduled_timezone": slot["timezone"],
+            "scheduled_time_occurrence": None,
+        }
+    return {
+        "due_date": slot["starts_at"],
+        "due_timezone": slot["timezone"],
+        "due_time_occurrence": None,
+    }
+
+
+def _add_history(
+    sessions: sessionmaker[Session],
+    action: str,
+    customer_id: int,
+    at: datetime,
+    statuses: Sequence[str],
+) -> None:
+    model, time_field, _ = SCHEDULE_CASES[action]
+    with sessions() as db:
+        for status in statuses:
+            extra = {"type": "call back"} if model is FollowUp else {}
+            db.add(
+                model(
+                    customer_id=customer_id,
+                    status=status,
+                    **{time_field: at.replace(tzinfo=None)},
+                    **extra,
+                )
+            )
+        db.commit()
+
+
+@pytest.mark.parametrize("action", list(SCHEDULE_CASES))
+def test_past_request_reports_history_then_offers_checked_future_times(
+    agent_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+    agent_records: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    customer_id = agent_records["customer_id"]
+    model = SCHEDULE_CASES[action][0]
+    _add_history(agent_sessions, action, customer_id, PAST_AT, ["completed"])
+    tool_messages: list[str] = []
+    real_build = agent_action_service.build_sales_agent
+
+    class RecordingAgent:
+        def __init__(self, agent: Any) -> None:
+            self.agent = agent
+
+        def invoke(self, payload: dict[str, Any], **kwargs: Any) -> Any:
+            state = self.agent.invoke(payload, **kwargs)
+            tool_messages.extend(
+                str(message.content)
+                for message in state["messages"]
+                if message.type == "tool"
+            )
+            return state
+
+    monkeypatch.setattr(
+        agent_action_service,
+        "build_sales_agent",
+        lambda *args, **kwargs: RecordingAgent(real_build(*args, **kwargs)),
+    )
+    _chat_model(
+        monkeypatch,
+        _tool_call(action, {"customer_id": customer_id, **_schedule_args(action, PAST_AT)}),
+        AIMessage(content="That time has already passed."),
+    )
+    before_proposals = _count(agent_sessions, HitlActionProposal)
+    before_records = _count(agent_sessions, model)
+
+    response = _post_chat(agent_client, customer_id, "Schedule it on August 7 at 10:45")
+
+    # Past time: no proposal and no suggested times yet; history is named as history.
+    assert response["pending_action"] is None
+    assert response["schedule_reason"] == "past"
+    assert response["schedule_alternatives"] == []
+    assert any(
+        "already passed" in text
+        and "completed historical record, not a scheduling conflict" in text
+        for text in tool_messages
+    ), tool_messages
+    assert _count(agent_sessions, HitlActionProposal) == before_proposals
+    task_id = response["clarification_task"]["task_id"]
+
+    # "Schedule a new ..." resubmits the task; the server rejects the past time
+    # and returns checked future slots.
+    rejected = agent_client.post(
+        f"/api/agent/tasks/{task_id}/inputs",
+        json={"operation_index": 0, "values": {}},
+    )
+    assert rejected.status_code == 422
+    error = rejected.json()["error"]
+    assert error["code"] == "schedule_in_past"
+    slots = error["details"]["suggestions"]
+    assert slots
+    assert all(
+        datetime.fromisoformat(slot["starts_at"]) > FROZEN_SCHEDULING_NOW
+        for slot in slots
+    )
+    assert _count(agent_sessions, HitlActionProposal) == before_proposals
+
+    accepted = agent_client.post(
+        f"/api/agent/tasks/{task_id}/inputs",
+        json={"operation_index": 0, "values": _suggestion_values(action, slots[0])},
+    )
+    assert accepted.status_code == 200, accepted.text
+    task = accepted.json()
+    assert task["status"] == "awaiting_approval"
+    assert _count(agent_sessions, model) == before_records
+
+    confirmed = agent_client.post(
+        f"/api/agent/actions/{task['operations'][0]['action_id']}/confirm"
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["status"] == "completed"
+    assert _count(agent_sessions, model) == before_records + 1
+
+
+@pytest.mark.parametrize("action", list(SCHEDULE_CASES))
+def test_inactive_history_at_same_future_time_does_not_block_new_activity(
+    agent_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+    agent_records: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    customer_id = agent_records["customer_id"]
+    _add_history(agent_sessions, action, customer_id, FUTURE_AT, SCHEDULE_CASES[action][2])
+    _chat_model(
+        monkeypatch,
+        _tool_call(action, {"customer_id": customer_id, **_schedule_args(action, FUTURE_AT)}),
+    )
+
+    response = _post_chat(agent_client, customer_id, "Schedule it at 10:45")
+
+    assert response["pending_action"]["action"] == action
+    assert response["schedule_reason"] is None
+
+
+@pytest.mark.parametrize("action", list(SCHEDULE_CASES))
+def test_execution_rejects_approved_activity_whose_time_has_passed(
+    agent_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+    agent_records: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    customer_id = agent_records["customer_id"]
+    model = SCHEDULE_CASES[action][0]
+    _chat_model(
+        monkeypatch,
+        _tool_call(action, {"customer_id": customer_id, **_schedule_args(action, FUTURE_AT)}),
+    )
+    pending = _post_chat(agent_client, customer_id, "Schedule it at 10:45")["pending_action"]
+    before = _count(agent_sessions, model)
+
+    class Later(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            return datetime(2031, 1, 1, tzinfo=timezone.utc)
+
+    monkeypatch.setattr("app.services.scheduling_service.datetime", Later)
+    confirmed = agent_client.post(f"/api/agent/actions/{pending['action_id']}/confirm")
+
+    assert confirmed.status_code == 200
+    result = confirmed.json()
+    assert result["status"] == "failed"
+    assert result["error_code"] == "schedule_in_past"
+    assert _count(agent_sessions, model) == before
+
+
+def test_rest_endpoints_reject_new_past_activities_but_keep_history_editable(
+    agent_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+    agent_records: dict[str, int],
+) -> None:
+    customer_id = agent_records["customer_id"]
+    past = PAST_AT.isoformat()
+    for path, body in (
+        ("/api/meetings", {"scheduled_at": past}),
+        ("/api/calls", {"scheduled_at": past, "status": "scheduled"}),
+        ("/api/followups", {"type": "call back", "due_date": past}),
+    ):
+        response = agent_client.post(path, json={"customer_id": customer_id, **body})
+        assert response.status_code == 422, (path, response.text)
+        assert response.json()["error"]["code"] == "schedule_in_past"
+
+    # An overdue follow-up is past-due by definition and stays allowed.
+    overdue = agent_client.post(
+        "/api/followups",
+        json={"customer_id": customer_id, "type": "late", "due_date": past, "status": "overdue"},
+    )
+    assert overdue.status_code == 201, overdue.text
+
+    # A meeting already in the past stays editable; moving it to another past
+    # time does not.
+    with agent_sessions() as db:
+        old = Meeting(
+            customer_id=customer_id,
+            scheduled_at=datetime(2026, 6, 1, 9, 0),
+            duration=30,
+            status="scheduled",
+        )
+        db.add(old)
+        db.commit()
+        meeting_path = f"/api/meetings/{old.meeting_id}"
+    assert agent_client.put(meeting_path, json={"notes": "Recap sent"}).status_code == 200
+    moved = agent_client.put(meeting_path, json={"scheduled_at": past})
+    assert moved.status_code == 422
+    assert moved.json()["error"]["code"] == "schedule_in_past"
+
+
+def test_chat_schedule_task_lifecycle_after_submission_expiry_and_cancellation(
+    agent_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+    agent_records: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    customer_id = agent_records["customer_id"]
+    _chat_model(
+        monkeypatch,
+        _tool_call(
+            "create_meeting",
+            {"customer_id": customer_id, **_schedule_args("create_meeting", PAST_AT)},
+        ),
+        AIMessage(content="That time has already passed."),
+    )
+    response = _post_chat(agent_client, customer_id, "Schedule it on August 7 at 10:45")
+    task_id = response["clarification_task"]["task_id"]
+    draft = _schedule_args("create_meeting", PAST_AT) | {"customer_id": customer_id}
+
+    def submit(target: str, values: dict[str, Any]) -> Any:
+        return agent_client.post(
+            f"/api/agent/tasks/{target}/inputs",
+            json={"operation_index": 0, "values": values},
+        )
+
+    slots = submit(task_id, {}).json()["error"]["details"]["suggestions"]
+    assert submit(task_id, _suggestion_values("create_meeting", slots[0])).status_code == 200
+    proposals = _count(agent_sessions, HitlActionProposal)
+
+    # The reported bug: a stale "Schedule a new meeting" click on a submitted task.
+    stale = submit(task_id, {})
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "invalid_task_transition"
+    # The chat now reads the task first and finds the proposal it can show instead.
+    current = agent_client.get(f"/api/agent/tasks/{task_id}").json()
+    assert current["status"] == "awaiting_approval"
+    assert current["operations"][0]["action_id"]
+    assert _count(agent_sessions, HitlActionProposal) == proposals
+
+    # An expired task rejects input; the chat replaces it rather than retrying it.
+    tasks = _count(agent_sessions, HitlTask)
+    expired_id = _post_chat(agent_client, customer_id, "Schedule it on August 7 at 10:45")[
+        "clarification_task"
+    ]["task_id"]
+    with agent_sessions() as db:
+        task = db.get(HitlTask, expired_id)
+        assert task is not None
+        task.expires_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        db.commit()
+    expired = submit(expired_id, {})
+    assert expired.status_code == 410
+    assert expired.json()["error"]["code"] == "task_expired"
+
+    # A replacement task built from the original request returns checked future
+    # times without persisting anything, then creates exactly one approval proposal.
+    assert agent_client.post(f"/api/agent/tasks/{task_id}/cancel").status_code == 200
+    replaced_tasks = _count(agent_sessions, HitlTask)
+    fresh = agent_client.post(
+        "/api/agent/tasks",
+        json={"operations": [{"action": "create_meeting", "values": draft}]},
+    )
+    assert fresh.status_code == 422
+    assert fresh.json()["error"]["code"] == "schedule_in_past"
+    fresh_slots = fresh.json()["error"]["details"]["suggestions"]
+    assert fresh_slots
+    assert _count(agent_sessions, HitlTask) == replaced_tasks
+
+    created = agent_client.post(
+        "/api/agent/tasks",
+        json={
+            "operations": [
+                {
+                    "action": "create_meeting",
+                    "values": draft | _suggestion_values("create_meeting", fresh_slots[0]),
+                }
+            ]
+        },
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["status"] == "awaiting_approval"
+    assert _count(agent_sessions, HitlTask) == replaced_tasks + 1
+    assert tasks + 1 == replaced_tasks
+
+
+def _scheduling_with_lookups(customer_id: int) -> list[AIMessage]:
+    # A realistic Gemini path: four read rounds, then the scheduling tool.
+    reads = (
+        "get_customer_profile",
+        "get_customer_meetings",
+        "get_customer_calls",
+        "get_customer_followups",
+    )
+    return [
+        *(_tool_call(name, {"customer_id": customer_id}, f"read-{name}") for name in reads),
+        _tool_call(
+            "create_meeting",
+            {
+                "customer_id": customer_id,
+                "scheduled_date": "2030-10-08",
+                "scheduled_time": "15:00",
+            },
+            "propose",
+        ),
+    ]
+
+
+def test_scheduling_with_lookups_terminates_within_default_step_limit(
+    agent_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+    agent_records: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import Settings
+
+    customer_id = agent_records["customer_id"]
+    # The old configured limit of 8 cannot fit five tool rounds (2 graph steps each).
+    monkeypatch.setattr(settings, "agent_recursion_limit", 8)
+    _chat_model(monkeypatch, *_scheduling_with_lookups(customer_id))
+    failed = agent_client.post(
+        "/api/agent/chat",
+        json={"message": "Schedule a meeting at 15:00", "customer_id": customer_id},
+    )
+    assert failed.status_code == 502
+    assert failed.json()["error"]["code"] == "agent_step_limit"
+
+    monkeypatch.setattr(
+        settings,
+        "agent_recursion_limit",
+        Settings.model_fields["agent_recursion_limit"].default,
+    )
+    _chat_model(monkeypatch, *_scheduling_with_lookups(customer_id))
+    proposed = _post_chat(agent_client, customer_id, "Schedule a meeting at 15:00")
+    assert proposed["pending_action"]["action"] == "create_meeting"
+    assert _count(agent_sessions, HitlActionProposal) == 1
+
+
+def test_tool_call_loop_fails_safely_without_crm_effects(
+    agent_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+    agent_records: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.agent.actions import action_checkpointer
+
+    customer_id = agent_records["customer_id"]
+    monkeypatch.setattr(settings, "agent_recursion_limit", 12)
+    # The fake model repeats its only response, so it requests the same tool forever.
+    _chat_model(
+        monkeypatch,
+        _tool_call("get_customer_profile", {"customer_id": customer_id}, "loop"),
+    )
+    before = {
+        model: _count(agent_sessions, model)
+        for model in (Meeting, HitlActionProposal, HitlTask, HitlExecutionAudit)
+    }
+    threads_before = set(action_checkpointer.storage)
+
+    response = agent_client.post(
+        "/api/agent/chat",
+        json={"message": "Schedule a meeting at 15:00", "customer_id": customer_id},
+    )
+
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert error["code"] == "agent_step_limit"
+    assert "No CRM changes were made" in error["message"]
+    assert "saved" not in error["message"]
+    assert {model: _count(agent_sessions, model) for model in before} == before
+    assert set(action_checkpointer.storage) == threads_before
+
+
+def test_task_input_submission_never_reruns_the_agent_graph(
+    agent_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+    agent_records: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "agent_recursion_limit", 12)
+    meetings_before = _count(agent_sessions, Meeting)
+    task = _post_meeting_clarification(
+        agent_client,
+        monkeypatch,
+        agent_records["customer_id"],
+        {"agenda": "Discuss the latest enquiry."},
+    )["clarification_task"]
+
+    def _graph_must_not_run(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("task input submission must not invoke the agent graph")
+
+    monkeypatch.setattr(agent_action_service, "build_sales_agent", _graph_must_not_run)
+    values = {"scheduled_date": "2030-10-12", "scheduled_time": "15:00"}
+    submitted = agent_client.post(
+        f"/api/agent/tasks/{task['task_id']}/inputs",
+        json={"operation_index": 0, "values": values},
+    )
+    assert submitted.status_code == 200, submitted.text
+    assert submitted.json()["status"] == "awaiting_approval"
+
+    repeated = agent_client.post(
+        f"/api/agent/tasks/{task['task_id']}/inputs",
+        json={"operation_index": 0, "values": values},
+    )
+    assert repeated.status_code == 409
+    assert _count(agent_sessions, HitlActionProposal) == 1
+    assert _count(agent_sessions, Meeting) == meetings_before
+
+
+def test_choosing_suggested_meeting_time_saves_proposal_with_foreign_keys_enforced(
+    agent_client: TestClient,
+    agent_engine: Any,
+    agent_sessions: sessionmaker[Session],
+    agent_records: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # SQLite ignores FKs by default; MySQL enforces them (error 1452 in production).
+    with agent_engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+    monkeypatch.setattr(settings, "agent_recursion_limit", 12)
+    customer_id = agent_records["customer_id"]
+    busy = datetime(2030, 10, 14, 16, 0, tzinfo=timezone.utc)
+    with agent_sessions() as db:
+        db.add(
+            Meeting(
+                customer_id=customer_id,
+                scheduled_at=busy.replace(tzinfo=None),
+                duration=60,
+                status="scheduled",
+            )
+        )
+        db.commit()
+    _chat_model(
+        monkeypatch,
+        _tool_call("create_meeting", {"customer_id": customer_id, **_schedule_args("create_meeting", busy)}),
+        AIMessage(content="That time conflicts with a meeting."),
+    )
+    response = _post_chat(agent_client, customer_id, "Schedule a meeting at 16:00")
+    task = response["clarification_task"]
+    choice = response["schedule_alternatives"][0]
+    meetings_before = _count(agent_sessions, Meeting)
+
+    chosen = agent_client.post(
+        f"/api/agent/tasks/{task['task_id']}/inputs",
+        json={"operation_index": 0, "values": _suggestion_values("create_meeting", choice)},
+    )
+
+    assert chosen.status_code == 200, chosen.text
+    operation = chosen.json()["operations"][0]
+    assert chosen.json()["status"] == "awaiting_approval"
+    with agent_sessions() as db:
+        assert db.query(HitlActionProposal).filter_by(task_id=task["task_id"]).count() == 1
+        assert db.scalar(
+            select(HitlActionAudit).where(HitlActionAudit.action_id == operation["action_id"])
+        ).event_type == "proposed"
+    assert _count(agent_sessions, Meeting) == meetings_before
+
+    approved = agent_client.post(f"/api/agent/actions/{operation['action_id']}/confirm")
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "completed"
+    assert _count(agent_sessions, Meeting) == meetings_before + 1

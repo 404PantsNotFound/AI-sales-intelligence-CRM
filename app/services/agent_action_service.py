@@ -1,11 +1,13 @@
 import json
 import logging
+import re
 from datetime import datetime, timezone
-from typing import Any, TypeGuard
+from typing import Any, Literal, TypeGuard
 from uuid import uuid4
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.errors import GraphRecursionError
 from langgraph.types import Interrupt
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -51,8 +53,10 @@ from app.services import (
     followup_service,
     meeting_service,
 )
+from app.services import calendar_sync_service
 from app.services.activity_validation import validate_customer_references
-from app.services.scheduling_service import lock_workspace_schedule
+from app.schemas.validators import timezone_from_name
+from app.services.scheduling_service import current_time, lock_workspace_schedule
 from app.services.agent_action_state import (
     PendingActionRecord,
     action_fingerprint,
@@ -129,6 +133,33 @@ def _proposal_payload(value: Any) -> tuple[AgentActionName, dict[str, Any]]:
         ) from exc
 
     return action, validated_payload
+
+
+_CALENDAR_ACTIVITY_TYPES: dict[str, Literal["meeting", "call", "followup"]] = {
+    "create_meeting": "meeting",
+    "schedule_call": "call",
+    "create_followup": "followup",
+}
+
+
+def _schedule_label(payload: dict[str, Any]) -> str:
+    for at_key, zone_key in (
+        ("scheduled_at", "scheduled_timezone"),
+        ("due_date", "due_timezone"),
+    ):
+        starts_at, zone_name = payload.get(at_key), payload.get(zone_key)
+        if not isinstance(starts_at, str) or not isinstance(zone_name, str):
+            continue
+        try:
+            moment = datetime.fromisoformat(starts_at)
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            local = moment.astimezone(timezone_from_name(zone_name))
+        except (TypeError, ValueError):
+            return ""
+        offset = local.strftime("%z")
+        return f" for {local:%Y-%m-%d %H:%M} {zone_name} (UTC{offset[:3]}:{offset[3:]})"
+    return ""
 
 
 def _meeting_clarification_question(missing_fields: list[str]) -> str:
@@ -254,6 +285,28 @@ def _extract_text(messages: list[Any]) -> str:
     return "I could not complete that request."
 
 
+# First-person or "successfully" claims that a CRM change happened. Only reached
+# when this request created no proposal and executed no action. "We have scheduled"
+# and "has been booked" are left out: they also describe existing records.
+_UNCONFIRMED_CHANGE_CLAIM = re.compile(
+    r"\bI(?:['’]ve|\s+have)?\s+(?:successfully\s+|now\s+|just\s+)?"
+    r"(?:scheduled|created|booked|saved|added|updated|logged|recorded|completed|"
+    r"approved|synced|set up)\b"
+    r"|\bsuccessfully\s+(?:scheduled|created|booked|saved|added|updated|logged|"
+    r"recorded|completed|approved|synced)\b"
+    r"|\b(?:has|have)\s+been\s+(?:successfully\s+)?(?:saved|approved|synced)\b",
+    re.IGNORECASE,
+)
+_NO_CHANGE_MESSAGE = (
+    "No CRM change was made in this request. If you want me to schedule or update "
+    "something, ask again and I will prepare it for your approval."
+)
+
+
+def _without_unconfirmed_change_claim(text: str) -> str:
+    return _NO_CHANGE_MESSAGE if _UNCONFIRMED_CHANGE_CLAIM.search(text) else text
+
+
 def _read_tool_calls(messages: list[Any]) -> list[AgentToolCall]:
     results_by_id = {
         message.tool_call_id: message
@@ -314,10 +367,12 @@ def propose_or_answer(
     *,
     model: BaseChatModel | None = None,
     user_id: int = 0,
+    history: list[dict[str, str]] | None = None,
 ) -> AgentChatResponse:
     tool_context = AgentToolContext(
         locked_customer_id=request.customer_id,
         timezone_name=request.timezone_name,
+        request_message=request.message,
     )
 
     if request.customer_id is not None:
@@ -330,6 +385,16 @@ def propose_or_answer(
             f"Selected CRM customer ID (use read tools to retrieve its facts): "
             f"{request.customer_id}\nUser request: {request.message}"
         )
+    if request.timezone_name is not None:
+        prompt = f"User's timezone (IANA): {request.timezone_name}\n{prompt}"
+    # Stated explicitly so the model cannot claim to remember messages it was never given.
+    prompt = (
+        f"Earlier messages in this conversation: {len(history)} (shown above).\n{prompt}"
+        if history
+        else f"Earlier messages in this conversation: none. This is its first message.\n{prompt}"
+    )
+    # Lets the model tell past records from upcoming ones without guessing today's date.
+    prompt = f"Current time (UTC): {current_time().isoformat(timespec='minutes')}\n{prompt}"
 
     thread_id = str(uuid4())
 
@@ -343,19 +408,21 @@ def propose_or_answer(
 
         try:
             logger.info(
-                "Starting agent request [thread_id=%s customer_id=%s message=%s]",
+                "Starting agent request [thread_id=%s customer_id=%s message_chars=%s]",
                 thread_id,
                 request.customer_id,
-                request.message,
+                len(request.message),
             )
 
             state = agent.invoke(
                 {
+                    # Earlier turns of this user's conversation for this customer only.
                     "messages": [
+                        *(history or []),
                         {
                             "role": "user",
                             "content": prompt,
-                        }
+                        },
                     ]
                 },
                 config={
@@ -434,7 +501,11 @@ def propose_or_answer(
 
                 clarification_task: AgentTaskResponse = build_task_response(db, task)
                 return AgentChatResponse(
-                    response=_meeting_clarification_question(missing_fields),
+                    response=(
+                        interrupt_value["question"]
+                        if isinstance(interrupt_value.get("question"), str)
+                        else _meeting_clarification_question(missing_fields)
+                    ),
                     customer_id=request.customer_id,
                     tool_calls=_read_tool_calls(state.get("messages", [])),
                     clarification_task=clarification_task,
@@ -483,8 +554,8 @@ def propose_or_answer(
 
             return AgentChatResponse(
                 response=(
-                    f"I am ready to {action.replace('_', ' ')}. "
-                    "Please confirm."
+                    f"I am ready to {action.replace('_', ' ')}"
+                    f"{_schedule_label(payload)}. Please confirm."
                 ),
                 customer_id=request.customer_id,
                 tool_calls=_read_tool_calls(
@@ -498,15 +569,70 @@ def propose_or_answer(
             )
 
         messages = state.get("messages", [])
+        conflict = tool_context.schedule_conflict
+        if (
+            conflict is not None
+            and get_action_policy(db, conflict["action"]) != "disabled"
+        ):
+            # Keep the conflicting request as an editable task; choosing an
+            # alternative resubmits it through the task flow, which rechecks
+            # availability before any proposal is created.
+            _validate_proposal_customer_scope(
+                db,
+                request_customer_id=request.customer_id,
+                tool_context=tool_context,
+                payload=conflict["values"],
+            )
+            task = pending_actions.create_task(
+                db,
+                user_id=user_id,
+                action_type=conflict["action"],
+                collected_data={
+                    "operations": [
+                        {
+                            "action": conflict["action"],
+                            "values": conflict["values"],
+                            "status": "collecting_information",
+                        }
+                    ]
+                },
+            )
+            from app.services.hitl_task_service import _response as build_task_response
+
+            return AgentChatResponse(
+                # Deterministic text from the availability result, so no invented slots.
+                response=conflict.get("message") or _extract_text(messages),
+                customer_id=request.customer_id,
+                tool_calls=_read_tool_calls(messages),
+                clarification_task=build_task_response(db, task),
+                schedule_alternatives=conflict["suggestions"],
+                schedule_reason=conflict.get("reason", "conflict"),
+            )
 
         return AgentChatResponse(
-            response=_extract_text(messages),
+            response=_without_unconfirmed_change_claim(_extract_text(messages)),
             customer_id=request.customer_id,
             tool_calls=_read_tool_calls(messages),
         )
 
     except APIError:
         raise
+
+    except GraphRecursionError as exc:
+        # The graph stopped before any proposal or task was persisted.
+        logger.warning(
+            "Agent step limit reached [operation=agent_chat thread_id=%s "
+            "recursion_limit=%s customer_id=%s]",
+            thread_id,
+            settings.agent_recursion_limit,
+            request.customer_id,
+        )
+        raise APIError(
+            "The AI assistant could not finish this request. No CRM changes were "
+            "made. Please try again with the customer, date, and time in one message.",
+            502,
+            "agent_step_limit",
+        ) from exc
 
     except Exception as exc:
         raise map_ai_provider_exception(
@@ -852,6 +978,17 @@ def _run_claimed_action(
                 error_code=result.error_code,
                 result_message=result.message,
                 commit=False,
+            )
+        calendar_type = _CALENDAR_ACTIVITY_TYPES.get(record.action)
+        if result.status == "completed" and calendar_type and result.record_id:
+            # Only after the approved CRM write has committed; the event goes to the
+            # calendar of the user who requested the proposal.
+            proposal = db.get(HitlActionProposal, record.action_id)
+            calendar_sync_service.sync_activity(
+                db,
+                calendar_type,
+                result.record_id,
+                created_by_user_id=proposal.owner_user_id if proposal else record.user_id,
             )
         return result
     except APIError as exc:

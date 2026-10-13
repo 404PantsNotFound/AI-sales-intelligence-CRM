@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Any
 
 from app.core.exceptions import APIError
 
@@ -7,12 +8,18 @@ from app.core.exceptions import APIError
 class AgentToolContext:
     locked_customer_id: int | None = None
     timezone_name: str | None = None
+    # The user's current chat message only, never earlier turns.
+    request_message: str | None = None
     customer_ids: set[int] = field(default_factory=set)
     contacts_by_customer: dict[int, set[int]] = field(default_factory=dict)
     enquiries_by_customer: dict[int, set[int]] = field(default_factory=dict)
     meetings_by_customer: dict[int, set[int]] = field(default_factory=dict)
     calls_by_customer: dict[int, set[int]] = field(default_factory=dict)
     followups_by_customer: dict[int, set[int]] = field(default_factory=dict)
+    # Last availability conflict found by a scheduling tool in this request.
+    schedule_conflict: dict[str, Any] | None = None
+    # Read-tool calls already answered in this request, keyed by name and arguments.
+    retrieved_calls: set[str] = field(default_factory=set)
 
     def can_access_customer(self, customer_id: int) -> bool:
         return self.locked_customer_id is None or self.locked_customer_id == customer_id

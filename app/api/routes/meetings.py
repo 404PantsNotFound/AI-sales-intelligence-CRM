@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, Path, status
 from sqlalchemy.orm import Session
 
+from app.core.security import get_current_user
 from app.database.connection import get_db
+from app.models import User
 from app.schemas.meeting import MeetingCreate, MeetingResponse, MeetingUpdate
-from app.services import meeting_service
+from app.services import calendar_sync_service, meeting_service
 
 router = APIRouter(prefix="/meetings", tags=["meetings"])
 customer_router = APIRouter(prefix="/customers", tags=["customer meetings"])
@@ -20,8 +22,16 @@ def test_meetings() -> dict[str, str]:
     status_code=status.HTTP_201_CREATED,
     summary="Schedule a customer meeting",
 )
-def create_meeting(data: MeetingCreate, db: Session = Depends(get_db)) -> MeetingResponse:
-    return MeetingResponse.model_validate(meeting_service.create_meeting(db, data))
+def create_meeting(
+    data: MeetingCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> MeetingResponse:
+    response = MeetingResponse.model_validate(meeting_service.create_meeting(db, data))
+    calendar_sync_service.sync_activity(
+        db, "meeting", response.meeting_id, created_by_user_id=current_user.user_id
+    )
+    return response
 
 
 @router.get("/{meeting_id}", response_model=MeetingResponse, summary="Get a meeting")
@@ -38,9 +48,11 @@ def update_meeting(
     meeting_id: int = Path(ge=1),
     db: Session = Depends(get_db),
 ) -> MeetingResponse:
-    return MeetingResponse.model_validate(
+    response = MeetingResponse.model_validate(
         meeting_service.update_meeting(db, meeting_id, data)
     )
+    calendar_sync_service.sync_activity(db, "meeting", meeting_id)
+    return response
 
 
 @customer_router.get(

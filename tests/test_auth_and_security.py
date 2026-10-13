@@ -630,7 +630,8 @@ def test_shared_crm_records_are_visible_and_manageable_across_users(
             "customer_id": customer_id,
             "contact_id": contact_id,
             "enquiry_id": enquiry_id,
-            "scheduled_at": now.isoformat(),
+            # shortcut: must be future and in the current month; flaky only in the last 5 minutes of a month.
+            "scheduled_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
             "agenda": "Shared meeting",
         },
     )
@@ -762,7 +763,7 @@ def test_pending_action_created_by_user_a_cannot_be_confirmed_or_cancelled_by_us
                 "create_meeting",
                 {
                     "customer_id": agent_records["customer_id"],
-                    "scheduled_date": "2026-10-10",
+                    "scheduled_date": "2030-10-10",
                     "scheduled_time": "15:00",
                     "scheduled_timezone": "Asia/Dubai",
                     "duration": 45,
@@ -776,7 +777,7 @@ def test_pending_action_created_by_user_a_cannot_be_confirmed_or_cancelled_by_us
     proposal_res = unauthenticated_client.post(
         "/api/agent/chat",
         json={
-            "message": "Schedule a meeting",
+            "message": "Schedule a meeting at 15:00",
             "customer_id": agent_records["customer_id"],
         },
         headers={"Authorization": f"Bearer {token_a}"},
@@ -831,7 +832,7 @@ def test_scoped_conversation_cannot_propose_action_for_another_customer(
                 "create_meeting",
                 {
                     "customer_id": two_customer_records["customer_2"],
-                    "scheduled_at": "2026-10-12T10:00:00+04:00",
+                    "scheduled_at": "2030-10-12T10:00:00+04:00",
                     "agenda": "Cross-customer attempt",
                 },
                 "propose-other-customer",
@@ -1041,7 +1042,7 @@ def test_global_chat_without_customer_id_discovers_customers_but_blocks_cross_en
 
     ok_res = agent_client.post(
         "/api/agent/chat",
-        json={"message": "Find Beta Customer and schedule a meeting with Bob Beta"},
+        json={"message": "Find Beta Customer and schedule a meeting with Bob Beta on 2026-10-15 at 14:00"},
     )
     assert ok_res.status_code == 200
     assert ok_res.json()["pending_action"]["action"] == "create_meeting"

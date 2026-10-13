@@ -3,21 +3,27 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.security import create_access_token, hash_password
 from app.models import (
+    Call,
+    Company,
+    Customer,
+    FollowUp,
     HitlActionAudit,
     HitlActionProposal,
     HitlApprovalDecision,
     HitlExecutionAudit,
     Meeting,
     HitlTask,
+    SalesEnquiry,
     User,
 )
 from app.services.agent_action_state import PendingActionStore
 from app.services.hitl_policy import set_action_policy
+from app.services.intelligence_service import suggest_actions
 
 
 def _create_second_user(
@@ -543,3 +549,94 @@ def test_task_submission_rejects_out_of_range_operation(
         },
     )
     assert response.status_code == 422
+
+
+def _crm_and_action_counts(sessions: sessionmaker[Session]) -> dict[str, int]:
+    with sessions() as db:
+        return {
+            model.__name__: db.scalar(select(func.count()).select_from(model))
+            for model in (Meeting, Call, FollowUp, SalesEnquiry, HitlActionProposal, HitlExecutionAudit)
+        }
+
+
+@pytest.mark.parametrize("codes", [["no_recent_activity"], ["no_next_step"]])
+def test_attention_suggestion_only_prepares_a_task_draft(
+    agent_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+    agent_records: dict[str, int],
+    codes: list[str],
+) -> None:
+    (suggestion,) = suggest_actions(agent_records["customer_id"], agent_records["enquiry_id"], codes)
+    with agent_sessions() as db:
+        admin = User(
+            email="suggestion-admin@example.com",
+            full_name="Suggestion Admin",
+            password_hash=hash_password("AdminPassword123!"),
+            role="admin",
+            is_active=True,
+        )
+        db.add(admin)
+        db.commit()
+        # Even an automatic policy cannot execute a draft that still lacks user input.
+        set_action_policy(db, suggestion.kind, "automatic", changed_by=admin.email)
+    before = _crm_and_action_counts(agent_sessions)
+
+    response = agent_client.post(
+        "/api/agent/tasks",
+        json={
+            "operations": [
+                {
+                    "action": suggestion.kind,
+                    "values": {**suggestion.prefill, suggestion.timezone_field: "Asia/Dubai"},
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    task = response.json()
+    operation = task["operations"][0]
+    assert task["status"] == "collecting_information"
+    assert operation["status"] != "pending" and operation["action_id"] is None
+    assert sorted(operation["missing_fields"]) == sorted(suggestion.user_must_provide)
+    assert operation["values"]["enquiry_id"] == agent_records["enquiry_id"]
+    assert _crm_and_action_counts(agent_sessions) == before
+
+
+def test_attention_suggestion_task_rejects_another_customers_enquiry(
+    agent_client: TestClient,
+    agent_sessions: sessionmaker[Session],
+    agent_records: dict[str, int],
+) -> None:
+    with agent_sessions() as db:
+        company = Company(company_name="Other Co")
+        db.add(company)
+        db.flush()
+        other = Customer(company_id=company.company_id, customer_name="Other Customer")
+        db.add(other)
+        db.flush()
+        foreign = SalesEnquiry(customer_id=other.customer_id, enquiry_text="Different customer.")
+        db.add(foreign)
+        db.commit()
+        foreign_enquiry_id = foreign.enquiry_id
+    (suggestion,) = suggest_actions(agent_records["customer_id"], foreign_enquiry_id, ["no_next_step"])
+    before = _crm_and_action_counts(agent_sessions)
+
+    response = agent_client.post(
+        "/api/agent/tasks",
+        json={
+            "operations": [
+                {
+                    "action": suggestion.kind,
+                    "values": {**suggestion.prefill, suggestion.timezone_field: "Asia/Dubai"},
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "enquiry_not_found"
+    assert "does not belong to this customer" in response.json()["error"]["message"]
+    assert _crm_and_action_counts(agent_sessions) == before
+    with agent_sessions() as db:
+        assert db.scalar(select(func.count()).select_from(HitlTask)) == 0

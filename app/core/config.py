@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     # Keep the legacy key available only for redacting secrets from an untouched .env.
     openai_api_key: SecretStr | None = None
     agent_recursion_limit: int = Field(default=12, ge=2, le=100)
+    # Earlier chat messages sent to the model per request; each is also capped in length.
+    agent_history_max_messages: int = Field(default=12, ge=0, le=50)
     agent_action_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     pending_action_max_capacity: int = Field(default=250, ge=1, le=10000)
     scheduling_meeting_default_duration_minutes: int = Field(default=60, ge=1, le=1440)
@@ -45,6 +47,14 @@ class Settings(BaseSettings):
     allow_public_registration: bool = True
     allow_public_registration_in_production: bool = False
     allow_localhost_cors_in_production: bool = False
+    # Google Calendar sync is disabled until all four values are configured.
+    google_client_id: str | None = None
+    google_client_secret: SecretStr | None = None
+    google_redirect_uri: str | None = None
+    # A Fernet key (base64, 32 bytes) used to encrypt OAuth tokens at rest.
+    google_token_encryption_key: SecretStr | None = None
+    google_calendar_scope: str = "https://www.googleapis.com/auth/calendar.events.owned"
+    google_api_timeout_seconds: float = Field(default=10.0, gt=0.0, le=60.0)
 
     model_config = SettingsConfigDict(
         env_file=".env",

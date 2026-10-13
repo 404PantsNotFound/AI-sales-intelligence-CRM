@@ -23,3 +23,16 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+
+ai_sales_crm_backup.sql
+
+# Claude Code: local machine-specific configuration
+.claude/
+
+# Graphify: exclude generated and machine-specific artifacts
+graphify-out/cache/
+graphify-out/.graphify_python
+graphify-out/2026-*/
+graphify-out/graph.html
+graphify-out/manifest.json
+graphify-out/cost.json

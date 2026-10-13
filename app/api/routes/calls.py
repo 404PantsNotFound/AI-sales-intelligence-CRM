@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, Path, status
 from sqlalchemy.orm import Session
 
+from app.core.security import get_current_user
 from app.database.connection import get_db
+from app.models import User
 from app.schemas.call import CallCreate, CallResponse, CallUpdate
-from app.services import call_service
+from app.services import calendar_sync_service, call_service
 
 router = APIRouter(prefix="/calls", tags=["calls"])
 customer_router = APIRouter(prefix="/customers", tags=["customer calls"])
@@ -20,8 +22,16 @@ def test_calls() -> dict[str, str]:
     status_code=status.HTTP_201_CREATED,
     summary="Log a customer call",
 )
-def create_call(data: CallCreate, db: Session = Depends(get_db)) -> CallResponse:
-    return CallResponse.model_validate(call_service.create_call(db, data))
+def create_call(
+    data: CallCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CallResponse:
+    response = CallResponse.model_validate(call_service.create_call(db, data))
+    calendar_sync_service.sync_activity(
+        db, "call", response.call_id, created_by_user_id=current_user.user_id
+    )
+    return response
 
 
 @router.get("/{call_id}", response_model=CallResponse, summary="Get a call")
@@ -35,7 +45,9 @@ def update_call(
     call_id: int = Path(ge=1),
     db: Session = Depends(get_db),
 ) -> CallResponse:
-    return CallResponse.model_validate(call_service.update_call(db, call_id, data))
+    response = CallResponse.model_validate(call_service.update_call(db, call_id, data))
+    calendar_sync_service.sync_activity(db, "call", call_id)
+    return response
 
 
 @customer_router.get(

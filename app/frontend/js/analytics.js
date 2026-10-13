@@ -1,5 +1,5 @@
 import { getAnalytics, requireAuth } from "./api.js";
-import { displayValue, element, humanize, mountAuthControls } from "./common.js";
+import { displayValue, element, formatNumber, humanize, mountAuthControls } from "./common.js";
 
 const filterForm = document.querySelector("#analytics-filters");
 const status = document.querySelector("#analytics-status");
@@ -39,7 +39,7 @@ function renderBars(target, records, valueKey = "count") {
     const value = numberValue(item[valueKey]);
     bar.style.width = `${max > 0 ? (value / max) * 100 : 0}%`;
     track.append(bar);
-    row.append(label, track, element("strong", "chart-value", displayValue(item[valueKey], "0")));
+    row.append(label, track, element("strong", "chart-value", formatNumber(item[valueKey], "0")));
     list.append(row);
   }
   target.append(list);
@@ -120,7 +120,7 @@ async function loadAnalytics() {
     renderBars(chartTargets.pipeline, pipeline.by_sales_stage, "value");
     renderActivity(chartTargets.activity, activities.over_time);
     renderBars(chartTargets.followups, followups.by_status);
-    totalValue.textContent = displayValue(enquiries.total_estimated_value, "0");
+    totalValue.textContent = formatNumber(enquiries.total_estimated_value, "0");
     document.querySelector("#followup-due-summary").textContent =
       `Due today: ${numberValue(followups.due_today)} · Due in the next 7 days: ${numberValue(followups.due_next_7_days)}`;
     status.hidden = true;
@@ -142,6 +142,14 @@ filterForm.addEventListener("submit", (event) => {
     return;
   }
   void loadAnalytics();
+});
+
+filterForm.addEventListener("reset", () => {
+  // The form clears after this event; reload with the defaults on the next tick.
+  window.setTimeout(() => {
+    errorMessage.hidden = true;
+    void loadAnalytics();
+  }, 0);
 });
 
 mountAuthControls();

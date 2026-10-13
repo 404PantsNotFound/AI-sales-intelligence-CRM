@@ -1,3 +1,5 @@
+from app.models.agent_conversation import AgentConversation, AgentConversationMessage
+from app.models.calendar import CalendarEventLink, GoogleCalendarConnection
 from app.models.crm import (
     Call,
     Company,
@@ -20,6 +22,10 @@ from app.models.hitl import (
 )
 
 __all__ = [
+    "AgentConversation",
+    "AgentConversationMessage",
+    "CalendarEventLink",
+    "GoogleCalendarConnection",
     "Call",
     "Company",
     "Contact",

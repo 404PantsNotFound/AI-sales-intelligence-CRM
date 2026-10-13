@@ -1,5 +1,5 @@
 import { getAuthToken, loginUser, registerUser } from "./api.js";
-import { mountAuthControls } from "./common.js";
+import { getPreference, mountAuthControls } from "./common.js";
 
 const form = document.querySelector("#login-form");
 const tabLogin = document.querySelector("#tab-login");
@@ -29,7 +29,8 @@ function safeNextDestination() {
   if (candidate.startsWith("/") && !candidate.startsWith("//") && !candidate.startsWith("/login")) {
     return candidate;
   }
-  return "/";
+  // Settings > Workspace: the page to open after signing in (validated whitelist).
+  return getPreference("startPage");
 }
 
 if (getAuthToken()) {
@@ -61,6 +62,7 @@ function setMode(nextMode) {
 
 tabLogin.addEventListener("click", () => setMode("login"));
 tabRegister.addEventListener("click", () => setMode("register"));
+if (new URLSearchParams(window.location.search).get("mode") === "register") setMode("register");
 // MANUAL EDIT
 form.addEventListener("submit", async (event) => {
   event.preventDefault();

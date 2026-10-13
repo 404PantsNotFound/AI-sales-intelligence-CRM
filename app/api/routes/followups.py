@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, Path, status
 from sqlalchemy.orm import Session
 
+from app.core.security import get_current_user
 from app.database.connection import get_db
+from app.models import User
 from app.schemas.follow_up import FollowUpCreate, FollowUpResponse, FollowUpUpdate
-from app.services import followup_service
+from app.services import calendar_sync_service, followup_service
 
 router = APIRouter(prefix="/followups", tags=["followups"])
 customer_router = APIRouter(prefix="/customers", tags=["customer follow-ups"])
@@ -23,8 +25,13 @@ def test_followups() -> dict[str, str]:
 def create_followup(
     data: FollowUpCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> FollowUpResponse:
-    return FollowUpResponse.model_validate(followup_service.create_followup(db, data))
+    response = FollowUpResponse.model_validate(followup_service.create_followup(db, data))
+    calendar_sync_service.sync_activity(
+        db, "followup", response.followup_id, created_by_user_id=current_user.user_id
+    )
+    return response
 
 
 @router.get("/{followup_id}", response_model=FollowUpResponse, summary="Get a follow-up")
@@ -45,9 +52,11 @@ def update_followup(
     followup_id: int = Path(ge=1),
     db: Session = Depends(get_db),
 ) -> FollowUpResponse:
-    return FollowUpResponse.model_validate(
+    response = FollowUpResponse.model_validate(
         followup_service.update_followup(db, followup_id, data)
     )
+    calendar_sync_service.sync_activity(db, "followup", followup_id)
+    return response
 
 
 @customer_router.get(

@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,7 +15,8 @@ from app.schemas.analytics import (
     PipelineMetrics,
     TimeGrain,
 )
-from app.services import analytics_service
+from app.schemas.intelligence import AttentionQueue
+from app.services import analytics_service, intelligence_service
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -95,6 +96,24 @@ def get_followups(
 ) -> FollowupMetrics:
     return analytics_service.get_followup_metrics(
         db, date_range.start_date, date_range.end_date
+    )
+
+
+@router.get("/attention", response_model=AttentionQueue)
+def get_attention_queue(
+    db: Session = Depends(get_db),
+    stale_days: int = Query(default=intelligence_service.DEFAULT_STALE_DAYS, ge=1, le=365),
+    limit: int = Query(default=intelligence_service.DEFAULT_LIMIT, ge=1, le=200),
+    new_enquiry_grace_days: int = Query(
+        default=intelligence_service.DEFAULT_NEW_ENQUIRY_GRACE_DAYS, ge=0, le=30
+    ),
+) -> AttentionQueue:
+    return intelligence_service.get_attention_queue(
+        db,
+        now=datetime.now(timezone.utc),
+        stale_days=stale_days,
+        limit=limit,
+        new_enquiry_grace_days=new_enquiry_grace_days,
     )
 
 

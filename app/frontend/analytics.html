@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Structured sales analytics from CRM records.">
     <title>Sales Analytics | SalesDesk</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%234338ca'/%3E%3Ctext x='16' y='22' font-family='Segoe UI,Arial' font-size='18' font-weight='700' fill='white' text-anchor='middle'%3ES%3C/text%3E%3C/svg%3E">
     <script src="/static/js/theme-init.js"></script>
     <link rel="stylesheet" href="/static/css/style.css">
     <link rel="stylesheet" href="/static/css/analytics.css">
@@ -12,33 +13,31 @@
     <script type="module" src="/static/js/analytics.js"></script>
   </head>
   <body>
-    <header class="site-header">
-      <a class="brand" href="/" aria-label="Sales CRM home"><span class="brand-mark" aria-hidden="true">S</span><span>Sales<span class="brand-light">Desk</span></span></a>
-      <nav class="top-nav" aria-label="Main navigation">
-        <a class="nav-link" href="/">Overview</a>
-        <a class="nav-link" href="/customer-registration">Register customer</a>
-        <a class="nav-link" href="/customer">Customer intelligence</a>
-        <a class="nav-link active" href="/analytics">Analytics</a>
-      </nav>
-      <a class="header-back" href="/">← <span>Home</span></a>
-    </header>
-    <main class="page-shell analytics-shell">
+    <a class="skip-link" href="#main">Skip to main content</a>
+    <div class="app-shell">
+      <aside id="app-sidebar" class="app-sidebar" aria-label="Primary"></aside>
+      <div class="sidebar-backdrop" aria-hidden="true"></div>
+      <div class="app-main">
+        <header class="site-header app-topbar"></header>
+    <main id="main" class="page-shell analytics-shell">
       <div class="page-intro">
-        <p class="eyebrow">SALES WORKSPACE <span class="eyebrow-divider">/</span> PERFORMANCE</p>
-        <h1>Sales analytics</h1>
-        <p>Structured metrics calculated from customer, enquiry, activity, and follow-up records.</p>
+        <div>
+          <h1>Sales analytics</h1>
+          <p>Metrics calculated from customer, enquiry, activity and follow-up records. Leave the dates empty to include all records.</p>
+        </div>
       </div>
-      <form id="analytics-filters" class="analytics-filters">
-        <label>Start date <input type="date" name="start_date"></label>
-        <label>End date <input type="date" name="end_date"></label>
-        <label>Time grouping
+      <form id="analytics-filters" class="analytics-filters" aria-label="Analytics filters">
+        <label class="field">From <input type="date" name="start_date"></label>
+        <label class="field">To <input type="date" name="end_date"></label>
+        <label class="field">Group activity by
           <select name="grain">
-            <option value="monthly" selected>Monthly</option>
-            <option value="weekly">Weekly</option>
-            <option value="daily">Daily</option>
+            <option value="monthly" selected>Month</option>
+            <option value="weekly">Week</option>
+            <option value="daily">Day</option>
           </select>
         </label>
-        <button class="button button-primary" type="submit">Apply filters</button>
+        <button class="button button-primary" type="submit">Apply</button>
+        <button class="button button-secondary" type="reset">Clear</button>
       </form>
       <p id="analytics-status" class="analytics-status" role="status" aria-live="polite">Loading analytics...</p>
       <section aria-label="Key performance indicators">
@@ -63,5 +62,7 @@
       <section class="analytics-summary"><span>Total estimated enquiry value</span><strong id="total-enquiry-value">0</strong></section>
       <p id="analytics-error" class="analytics-error" role="alert" hidden></p>
     </main>
+      </div>
+    </div>
   </body>
 </html>

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +19,7 @@ from app.api.routes import (
     scheduling,
     imports,
 )
+from app.api.routes import calendar as calendar_routes
 from app.core.config import Settings, settings
 from app.core.exceptions import APIError, api_error_handler
 from app.core.security import get_current_user
@@ -43,6 +44,15 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
+
+    @application.middleware("http")
+    async def revalidate_frontend(request: Request, call_next):
+        # Without this, browsers heuristically cache pages and ES modules, then mix
+        # old and new files after an update and break module imports.
+        response = await call_next(request)
+        if not request.url.path.startswith(app_settings.api_prefix):
+            response.headers.setdefault("Cache-Control", "no-cache")
+        return response
 
     application.mount(
         "/static",
@@ -70,6 +80,10 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
     def analytics_dashboard_page() -> FileResponse:
         return FileResponse(FRONTEND_DIR / "analytics.html")
 
+    @application.get("/settings", include_in_schema=False)
+    def settings_page() -> FileResponse:
+        return FileResponse(FRONTEND_DIR / "settings.html")
+
     @application.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -86,6 +100,7 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
 
     api_router = APIRouter(prefix=app_settings.api_prefix)
     api_router.include_router(auth.router)
+    api_router.include_router(calendar_routes.callback_router)
 
     protected_dependencies = [Depends(get_current_user)]
     for router in (
@@ -105,6 +120,7 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         analytics.router,
         agent.router,
         imports.router,
+        calendar_routes.router,
     ):
         api_router.include_router(router, dependencies=protected_dependencies)
 

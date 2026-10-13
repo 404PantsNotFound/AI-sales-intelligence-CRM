@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, time, timedelta, timezone
 from typing import Literal
 
@@ -318,6 +318,43 @@ def inspect_availability(
         ],
         "suggestions": suggestions,
     }
+
+
+def current_time() -> datetime:
+    return datetime.now(_UTC)
+
+
+def starts_in_past(starts_at: datetime) -> bool:
+    return _as_utc(starts_at) <= datetime.now(_UTC)
+
+
+def require_future_start(db: Session, request: ScheduleRequest) -> None:
+    request = _normalize_request(request)
+    now = datetime.now(_UTC)
+    if request.starts_at > now:
+        return
+    # Alternatives are anchored at now, because the requested day has passed.
+    anchor = replace(request, starts_at=now)
+    busy = _busy_slots(
+        db,
+        starts_before=_search_end(anchor),
+        starts_after=now - timedelta(minutes=_MAX_ACTIVITY_DURATION_MINUTES),
+    )
+    raise APIError(
+        "The requested time has already passed. Choose a future time.",
+        422,
+        "schedule_in_past",
+        details={
+            "activity_type": request.activity_type,
+            "starts_at": request.starts_at.astimezone(
+                timezone_from_name(request.timezone_name)
+            ).isoformat(),
+            "timezone": request.timezone_name,
+            "duration_minutes": request.duration_minutes,
+            "conflicts": [],
+            "suggestions": _suggestions(anchor, busy),
+        },
+    )
 
 
 def require_available(

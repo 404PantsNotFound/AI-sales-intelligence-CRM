@@ -11,7 +11,7 @@ from app.schemas.follow_up import FollowUpResponse
 from app.schemas.meeting import MeetingResponse
 from app.services import activity_service, call_service, followup_service, meeting_service
 
-from .common import bounded_records, error_output, success_output
+from .common import bounded_records, error_output, success_output, with_timing
 from .context import AgentToolContext
 from .schemas import CustomerActivityInput, CustomerIdInput
 
@@ -66,10 +66,13 @@ def build_activity_tools(
                             meeting.enquiry_id,
                         )
 
-            records = [
-                MeetingResponse.model_validate(meeting).model_dump(mode="json")
-                for meeting in meetings
-            ]
+            records = with_timing(
+                [
+                    MeetingResponse.model_validate(meeting).model_dump(mode="json")
+                    for meeting in meetings
+                ],
+                "scheduled_at",
+            )
 
             return success_output(bounded_records(records))
 
@@ -114,10 +117,13 @@ def build_activity_tools(
                             call.enquiry_id,
                         )
 
-            records = [
-                CallResponse.model_validate(call).model_dump(mode="json")
-                for call in calls
-            ]
+            records = with_timing(
+                [
+                    CallResponse.model_validate(call).model_dump(mode="json")
+                    for call in calls
+                ],
+                "scheduled_at",
+            )
 
             return success_output(bounded_records(records))
 
@@ -168,10 +174,13 @@ def build_activity_tools(
                             followup.call_id,
                         )
 
-            records = [
-                FollowUpResponse.model_validate(followup).model_dump(mode="json")
-                for followup in followups
-            ]
+            records = with_timing(
+                [
+                    FollowUpResponse.model_validate(followup).model_dump(mode="json")
+                    for followup in followups
+                ],
+                "due_date",
+            )
 
             return success_output(bounded_records(records))
 
@@ -209,10 +218,10 @@ def build_activity_tools(
             if context is not None:
                 context.remember_customer(customer_id)
 
-            records = [
-                item.model_dump(mode="json")
-                for item in activity
-            ]
+            records = with_timing(
+                [item.model_dump(mode="json") for item in activity],
+                "activity_date",
+            )
 
             return success_output(bounded_records(records))
 

@@ -15,6 +15,7 @@ from app.services.scheduling_service import (
     ScheduleRequest,
     lock_workspace_schedule,
     require_available,
+    require_future_start,
 )
 from app.schemas.validators import (
     normalize_utc_datetime,
@@ -40,16 +41,15 @@ def create_call(
                 enquiry_id=data.enquiry_id,
             )
             if data.status == "scheduled" and data.scheduled_at is not None:
-                require_available(
-                    db,
-                    ScheduleRequest(
-                        activity_type="call",
-                        starts_at=data.scheduled_at,
-                        duration_minutes=data.duration
-                        or settings.scheduling_call_default_duration_minutes,
-                        timezone_name=data.scheduled_timezone or "UTC",
-                    ),
+                schedule = ScheduleRequest(
+                    activity_type="call",
+                    starts_at=data.scheduled_at,
+                    duration_minutes=data.duration
+                    or settings.scheduling_call_default_duration_minutes,
+                    timezone_name=data.scheduled_timezone or "UTC",
                 )
+                require_future_start(db, schedule)
+                require_available(db, schedule)
             values = data.model_dump()
             if data.scheduled_at is not None:
                 values["scheduled_at"] = normalize_utc_datetime(data.scheduled_at)
@@ -116,18 +116,22 @@ def update_call(db: Session, call_id: int, data: CallUpdate) -> Call:
             if duration is None:
                 duration = settings.scheduling_call_default_duration_minutes
             if target_status == "scheduled" and scheduled_at is not None:
-                require_available(
-                    db,
-                    ScheduleRequest(
-                        activity_type="call",
-                        starts_at=scheduled_at,
-                        duration_minutes=duration,
-                        timezone_name=updates.get(
-                            "scheduled_timezone", call.scheduled_timezone or "UTC"
-                        ),
-                        exclude_id=call.call_id,
+                schedule = ScheduleRequest(
+                    activity_type="call",
+                    starts_at=scheduled_at,
+                    duration_minutes=duration,
+                    timezone_name=updates.get(
+                        "scheduled_timezone", call.scheduled_timezone or "UTC"
                     ),
+                    exclude_id=call.call_id,
                 )
+                # Untouched past calls stay editable; new or reopened times must be future.
+                if (
+                    call.status != "scheduled"
+                    or scheduled_at != normalize_utc_datetime(call.scheduled_at)
+                ):
+                    require_future_start(db, schedule)
+                require_available(db, schedule)
                 updates["duration"] = duration
             validate_customer_references(
                 db,
