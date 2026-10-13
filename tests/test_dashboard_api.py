@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.security import create_access_token, hash_password
 from app.main import app
 from app.models import Call, FollowUp, Meeting, User
+from tests.conftest import legacy_organization_id
 
 
 def test_workspace_activities_are_authenticated_and_shared(
@@ -45,6 +46,7 @@ def test_workspace_activities_are_authenticated_and_shared(
             password_hash=hash_password("DashboardPassword123!"),
             role="sales",
             is_active=True,
+            organization_id=legacy_organization_id(db),
         )
         db.add(other_user)
         db.commit()

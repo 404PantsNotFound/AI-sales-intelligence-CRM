@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import Settings, settings
-from app.core.security import create_access_token
+from app.core.security import create_access_token, hash_password
 from app.database.connection import get_db
 from app.main import app
 from app.models import (
@@ -27,7 +27,7 @@ from app.models import (
     SalesEnquiry,
     User,
 )
-from tests.conftest import authorize_test_client
+from tests.conftest import authorize_test_client, legacy_organization_id
 
 
 class ToolCallingFakeChatModel(FakeMessagesListChatModel):
@@ -211,33 +211,25 @@ def two_customer_records(
 # ==================================================
 
 
-def test_user_registration_success_and_argon2_hashing(
-    unauthenticated_client: TestClient,
-    agent_sessions: sessionmaker[Session],
+def _seed_user(
+    sessions: sessionmaker[Session],
+    email: str,
+    password: str,
+    full_name: str,
 ) -> None:
-    response = unauthenticated_client.post(
-        "/api/auth/register",
-        json={
-            "email": "  New.Rep@Example.com ",
-            "password": "StrongPassword!234",
-            "full_name": "Jordan Taylor",
-            "role": "sales",
-        },
-    )
-    assert response.status_code == 201
-    body = response.json()
-    assert body["email"] == "new.rep@example.com"
-    assert body["full_name"] == "Jordan Taylor"
-    assert body["role"] == "sales"
-    assert body["is_active"] is True
-    assert "password" not in body
-    assert "password_hash" not in body
-
-    with agent_sessions() as db:
-        stored = db.scalar(select(User).where(User.email == "new.rep@example.com"))
-        assert stored is not None
-        assert stored.password_hash != "StrongPassword!234"
-        assert stored.password_hash.startswith("$argon2")
+    # Phase 1 registration cannot create users (no organisation signup yet), so seed directly.
+    with sessions() as db:
+        db.add(
+            User(
+                email=email,
+                full_name=full_name,
+                password_hash=hash_password(password),
+                role="sales",
+                is_active=True,
+                organization_id=legacy_organization_id(db),
+            )
+        )
+        db.commit()
 
 
 def test_public_registration_cannot_assign_admin_role(
@@ -254,34 +246,11 @@ def test_public_registration_cannot_assign_admin_role(
         },
     )
 
-    assert response.status_code == 201, response.text
-    assert response.json()["role"] == "sales"
-
+    # Registration cannot create users in Phase 1; whatever happens, no admin appears.
+    assert response.status_code != 201, response.text
     with agent_sessions() as db:
-        stored = db.scalar(
-            select(User).where(User.email == "self.promoted@example.com")
-        )
-        assert stored is not None
-        assert stored.role == "sales"
-
-
-def test_duplicate_email_registration_returns_409(
-    unauthenticated_client: TestClient,
-) -> None:
-    payload = {
-        "email": "duplicate@example.com",
-        "password": "StrongPassword!234",
-        "full_name": "First User",
-    }
-    first = unauthenticated_client.post("/api/auth/register", json=payload)
-    assert first.status_code == 201
-
-    second = unauthenticated_client.post(
-        "/api/auth/register",
-        json={**payload, "email": "DUPLICATE@EXAMPLE.COM"},
-    )
-    assert second.status_code == 409
-    assert second.json()["error"]["code"] == "duplicate_email"
+        assert db.scalar(select(User).where(User.role == "admin")) is None
+        assert db.scalar(select(User).where(User.email == "self.promoted@example.com")) is None
 
 
 def test_public_registration_can_be_disabled(
@@ -338,15 +307,13 @@ def test_production_settings_reject_weak_jwt_and_unsafe_public_registration() ->
 
 def test_login_valid_invalid_and_me_endpoint(
     unauthenticated_client: TestClient,
+    agent_sessions: sessionmaker[Session],
 ) -> None:
-    unauthenticated_client.post(
-        "/api/auth/register",
-        json={
-            "email": "login.user@example.com",
-            "password": "CorrectHorseBattery!1",
-            "full_name": "Login User",
-        },
-    )
+    _seed_user(agent_sessions, "login.user@example.com", "CorrectHorseBattery!1", "Login User")
+    with agent_sessions() as db:
+        stored = db.scalar(select(User).where(User.email == "login.user@example.com"))
+        assert stored is not None
+        assert stored.password_hash.startswith("$argon2")
 
     wrong_password = unauthenticated_client.post(
         "/api/auth/login",
@@ -387,14 +354,7 @@ def test_inactive_user_cannot_login_or_use_token(
     unauthenticated_client: TestClient,
     agent_sessions: sessionmaker[Session],
 ) -> None:
-    unauthenticated_client.post(
-        "/api/auth/register",
-        json={
-            "email": "inactive@example.com",
-            "password": "StrongPassword!234",
-            "full_name": "Inactive User",
-        },
-    )
+    _seed_user(agent_sessions, "inactive@example.com", "StrongPassword!234", "Inactive User")
     with agent_sessions() as db:
         user = db.scalar(select(User).where(User.email == "inactive@example.com"))
         assert user is not None

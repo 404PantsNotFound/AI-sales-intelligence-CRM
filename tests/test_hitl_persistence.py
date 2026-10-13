@@ -28,6 +28,7 @@ from app.services.hitl_policy import (
     get_action_policy,
     set_action_policy,
 )
+from tests.conftest import legacy_organization_id
 
 
 def _create_user(db: Session, email: str, role: str = "sales") -> User:
@@ -37,6 +38,7 @@ def _create_user(db: Session, email: str, role: str = "sales") -> User:
         password_hash="test-only-hash",
         role=role,
         is_active=True,
+        organization_id=legacy_organization_id(db),
     )
     db.add(user)
     db.commit()

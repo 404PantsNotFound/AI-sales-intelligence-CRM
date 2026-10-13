@@ -38,7 +38,7 @@ from app.schemas.agent import AgentChatRequest
 from app.services import agent_action_service
 from app.services.agent_action_state import PendingActionStore
 from app.services.hitl_policy import set_action_policy
-from tests.conftest import FROZEN_SCHEDULING_NOW
+from tests.conftest import FROZEN_SCHEDULING_NOW, legacy_organization_id
 
 
 class ToolCallingFakeChatModel(FakeMessagesListChatModel):
@@ -992,6 +992,7 @@ def _configure_action_policy(
             password_hash="test-only-hash",
             role="admin",
             is_active=True,
+            organization_id=legacy_organization_id(db),
         )
         db.add(admin)
         db.commit()
@@ -1126,6 +1127,7 @@ def test_admin_reviewer_can_approve_another_users_pending_action(
             password_hash="test-only-hash",
             role="admin",
             is_active=True,
+            organization_id=legacy_organization_id(db),
         )
         db.add(reviewer)
         db.commit()
@@ -1302,6 +1304,7 @@ def test_simultaneous_claims_only_start_one_execution(
                 password_hash="test-only-hash",
                 role="sales",
                 is_active=True,
+                organization_id=legacy_organization_id(db),
             )
             db.add(user)
             company = Company(company_name="Concurrency Test Company")

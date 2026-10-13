@@ -24,6 +24,7 @@ from app.models import (
 from app.services.agent_action_state import PendingActionStore
 from app.services.hitl_policy import set_action_policy
 from app.services.intelligence_service import suggest_actions
+from tests.conftest import legacy_organization_id
 
 
 def _create_second_user(
@@ -37,6 +38,7 @@ def _create_second_user(
             password_hash=hash_password("AnotherPassword123!"),
             role="sales",
             is_active=True,
+            organization_id=legacy_organization_id(db),
         )
         db.add(user)
         db.commit()
@@ -230,6 +232,7 @@ def test_task_automatic_policy_executes_through_central_boundary(
             password_hash=hash_password("AdminPassword123!"),
             role="admin",
             is_active=True,
+            organization_id=legacy_organization_id(db),
         )
         db.add(admin)
         db.commit()
@@ -574,6 +577,7 @@ def test_attention_suggestion_only_prepares_a_task_draft(
             password_hash=hash_password("AdminPassword123!"),
             role="admin",
             is_active=True,
+            organization_id=legacy_organization_id(db),
         )
         db.add(admin)
         db.commit()

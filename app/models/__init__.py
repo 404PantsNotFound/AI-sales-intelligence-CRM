@@ -11,6 +11,7 @@ from app.models.crm import (
     SalesEnquiry,
     User,
 )
+from app.models.organization import Organization
 from app.models.hitl import (
     HitlActionAudit,
     HitlActionProposal,
@@ -32,6 +33,7 @@ __all__ = [
     "Customer",
     "FollowUp",
     "Meeting",
+    "Organization",
     "SchedulingLock",
     "SalesEnquiry",
     "User",

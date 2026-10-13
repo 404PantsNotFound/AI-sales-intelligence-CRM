@@ -9,7 +9,7 @@ from app.core.config import settings
 from app.core.exceptions import APIError
 from app.core.logging_utils import log_database_exception
 from app.core.security import create_access_token, hash_password, verify_password
-from app.database.connection import atomic_transaction
+from app.database.connection import atomic_transaction, rollback_failed_transaction
 from app.models import User
 from app.schemas.auth import (
     TokenResponse,
@@ -23,6 +23,33 @@ logger = logging.getLogger(__name__)
 
 def _normalized_email(email: str) -> str:
     return email.strip().lower()
+
+
+def _email_exists(db: Session, normalized_email: str) -> bool:
+    return (
+        db.scalar(
+            select(User.user_id)
+            .where(func.lower(func.trim(User.email)) == normalized_email)
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def _duplicate_email_error() -> APIError:
+    return APIError(
+        "A user with this email is already registered.",
+        status_code=409,
+        code="duplicate_email",
+    )
+
+
+def _database_error() -> APIError:
+    return APIError(
+        "The database operation could not be completed.",
+        status_code=500,
+        code="database_error",
+    )
 
 # MANUAL EDIT
 def register_user(db: Session, payload: UserRegisterRequest) -> User:
@@ -54,18 +81,8 @@ def register_user(db: Session, payload: UserRegisterRequest) -> User:
 
     try:
         with atomic_transaction(db):
-            existing_id = db.scalar(
-                select(User.user_id)
-                .where(func.lower(func.trim(User.email)) == normalized_email)
-                .limit(1)
-            )
-
-            if existing_id is not None:
-                raise APIError(
-                    "A user with this email is already registered.",
-                    status_code=409,
-                    code="duplicate_email",
-                )
+            if _email_exists(db, normalized_email):
+                raise _duplicate_email_error()
 
             user = User(
                 email=normalized_email,
@@ -86,19 +103,24 @@ def register_user(db: Session, payload: UserRegisterRequest) -> User:
 
     except IntegrityError as exc:
         log_database_exception(logger, "register_user", exc, conflict=True)
-        raise APIError(
-            "A user with this email is already registered.",
-            status_code=409,
-            code="duplicate_email",
-        ) from exc
+        rollback_failed_transaction(db)
+        # Decided by outcome, not by which constraint fired: a concurrent insert of
+        # this email is committed before InnoDB reports the duplicate, so a fresh
+        # read sees it; any other integrity failure leaves the email unregistered.
+        try:
+            email_taken = _email_exists(db, normalized_email)
+        except SQLAlchemyError as recheck_exc:
+            log_database_exception(logger, "register_user", recheck_exc)
+            raise _database_error() from exc
+        finally:
+            rollback_failed_transaction(db)
+        if email_taken:
+            raise _duplicate_email_error() from exc
+        raise _database_error() from exc
 
     except SQLAlchemyError as exc:
         log_database_exception(logger, "register_user", exc)
-        raise APIError(
-            "The database operation could not be completed.",
-            status_code=500,
-            code="database_error",
-        ) from exc
+        raise _database_error() from exc
 
 
 def authenticate_user(db: Session, payload: UserLoginRequest) -> TokenResponse:

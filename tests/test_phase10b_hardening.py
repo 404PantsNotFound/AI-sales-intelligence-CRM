@@ -23,6 +23,7 @@ from app.main import create_app
 from app.models import Call, Company, Customer, FollowUp, HitlActionProposal, Meeting, User
 from app.services import agent_action_service, ai_service
 from app.services.agent_action_state import PendingActionStore, pending_actions
+from tests.conftest import legacy_organization_id
 
 
 class ToolCallingFakeChatModel(FakeMessagesListChatModel):
@@ -549,6 +550,7 @@ def test_pending_action_store_capacity_does_not_evict_persisted_actions(
             password_hash="test-hash",
             role="sales",
             is_active=True,
+            organization_id=legacy_organization_id(db),
         )
         db.add(user)
         db.commit()

@@ -43,9 +43,13 @@ from app.schemas import (
 
 def test_all_models_register_expected_tables() -> None:
     expected_columns = {
+        "organizations": {
+            "organization_id", "name", "slug", "status", "created_at", "updated_at",
+        },
         "users": {
             "user_id", "email", "full_name", "password_hash", "role",
-            "is_active", "created_at", "updated_at",
+            "is_active", "organization_id", "email_verified_at",
+            "verification_grace_until", "created_at", "updated_at",
         },
         "companies": {
             "company_id", "company_name", "industry", "website", "address", "city",

@@ -20,10 +20,12 @@ from app.models import (
     Customer,
     FollowUp,
     Meeting,
+    Organization,
     SalesEnquiry,
     SchedulingLock,
     User,
 )
+from app.models.organization import LEGACY_ORGANIZATION_NAME, LEGACY_ORGANIZATION_SLUG
 
 TEST_USER_PASSWORD = "TestPassword123!"
 TEST_USER_PASSWORD_HASH = hash_password(TEST_USER_PASSWORD)
@@ -57,6 +59,18 @@ def ensure_jwt_test_secret(monkeypatch: pytest.MonkeyPatch) -> Generator[None, N
 
 
 
+def legacy_organization_id(db: Session) -> int:
+    """The legacy workspace every pre-existing user belongs to, created on first use."""
+    organization = db.scalar(
+        select(Organization).where(Organization.slug == LEGACY_ORGANIZATION_SLUG)
+    )
+    if organization is None:
+        organization = Organization(name=LEGACY_ORGANIZATION_NAME, slug=LEGACY_ORGANIZATION_SLUG)
+        db.add(organization)
+        db.flush()
+    return organization.organization_id
+
+
 def authorize_test_client(
     sessions: sessionmaker[Session],
     client: TestClient,
@@ -75,6 +89,7 @@ def authorize_test_client(
                 password_hash=TEST_USER_PASSWORD_HASH,
                 role=role,
                 is_active=is_active,
+                organization_id=legacy_organization_id(db),
             )
             db.add(user)
             db.commit()

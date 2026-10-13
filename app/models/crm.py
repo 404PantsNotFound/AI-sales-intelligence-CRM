@@ -17,6 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.connection import Base
+from app.models.organization import Organization
 
 
 class User(Base):
@@ -28,12 +29,26 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(50), nullable=False, default="sales", index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "organizations.organization_id",
+            ondelete="RESTRICT",
+            name="fk_users_organization_id_organizations",
+        ),
+        nullable=False,
+        index=True,
+    )
+    # Stored only; verification is not enforced until Phase 2.
+    email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    verification_grace_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+    organization: Mapped[Organization] = relationship()
 
 
 class Company(Base):
