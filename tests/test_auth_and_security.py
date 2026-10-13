@@ -73,8 +73,8 @@ def two_customer_records(
 ) -> dict[str, int]:
     now = datetime(2026, 10, 2, 10, 0, tzinfo=timezone.utc)
     with agent_sessions() as db:
-        company_one = Company(company_name="Alpha Corp", industry="Software")
-        company_two = Company(company_name="Beta Logistics", industry="Logistics")
+        company_one = Company(organization_id=legacy_organization_id(db), company_name="Alpha Corp", industry="Software")
+        company_two = Company(organization_id=legacy_organization_id(db), company_name="Beta Logistics", industry="Logistics")
         db.add_all([company_one, company_two])
         db.flush()
 
@@ -430,7 +430,7 @@ def test_ordinary_user_cannot_change_agent_policy(
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "forbidden"
     with agent_sessions() as db:
-        assert db.get(HitlPolicyOverride, "create_meeting") is None
+        assert db.get(HitlPolicyOverride, (legacy_organization_id(db), "create_meeting")) is None
 
 
 def test_policy_update_rejects_mismatched_action_identifiers(

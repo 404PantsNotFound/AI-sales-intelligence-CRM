@@ -23,6 +23,10 @@ def build_activity_tools(
     session_factory: sessionmaker[Session] | None = None,
 ) -> list[StructuredTool]:
 
+    if context is None:
+        raise ValueError("CRM tools require a tenant context.")
+    organization_id = context.organization_id
+
     factory = session_factory
 
     def get_session() -> tuple[Session, bool]:
@@ -43,6 +47,7 @@ def build_activity_tools(
             meetings = meeting_service.list_customer_meetings(
                 session,
                 customer_id,
+                organization_id=organization_id,
             )
 
             if context is not None:
@@ -94,6 +99,7 @@ def build_activity_tools(
             calls = call_service.list_customer_calls(
                 session,
                 customer_id,
+                organization_id=organization_id,
             )
 
             if context is not None:
@@ -145,6 +151,7 @@ def build_activity_tools(
             followups = followup_service.list_customer_followups(
                 session,
                 customer_id,
+                organization_id=organization_id,
             )
 
             if context is not None:
@@ -210,6 +217,7 @@ def build_activity_tools(
             activity = activity_service.get_customer_activity(
                 session,
                 customer_id,
+                organization_id=organization_id,
                 activity_type=activity_type,
                 start_date=start_date,
                 end_date=end_date,

@@ -12,7 +12,7 @@ from app.database.connection import atomic_transaction, rollback_failed_transact
 from app.models import Meeting
 from app.schemas.meeting import MeetingCreate, MeetingUpdate
 from app.schemas.validators import normalize_utc_datetime, timezone_name_from_datetime
-from app.services.activity_validation import validate_customer_references
+from app.services.activity_validation import owned, validate_customer_references
 from app.services.scheduling_service import (
     ScheduleRequest,
     lock_workspace_schedule,
@@ -27,14 +27,16 @@ def create_meeting(
     db: Session,
     data: MeetingCreate,
     *,
+    organization_id: int,
     defer_commit: bool = False,
 ) -> Meeting:
     try:
         with atomic_transaction(db, commit_existing=not defer_commit):
-            lock_workspace_schedule(db)
+            lock_workspace_schedule(db, organization_id)
             validate_customer_references(
                 db,
                 data.customer_id,
+                organization_id=organization_id,
                 contact_id=data.contact_id,
                 enquiry_id=data.enquiry_id,
             )
@@ -45,6 +47,7 @@ def create_meeting(
                     duration_minutes=data.duration
                     or settings.scheduling_meeting_default_duration_minutes,
                     timezone_name=data.scheduled_timezone or "UTC",
+                    organization_id=organization_id,
                 )
                 require_future_start(db, schedule)
                 require_available(db, schedule)
@@ -53,7 +56,7 @@ def create_meeting(
             values["duration"] = (
                 data.duration or settings.scheduling_meeting_default_duration_minutes
             )
-            meeting = Meeting(**values)
+            meeting = Meeting(**values, organization_id=organization_id)
             db.add(meeting)
             db.flush()
             db.refresh(meeting)
@@ -70,12 +73,12 @@ def create_meeting(
         raise APIError("The database operation could not be completed.", 500, "database_error") from exc
 
 
-def get_meeting(db: Session, meeting_id: int) -> Meeting:
+def get_meeting(db: Session, meeting_id: int, *, organization_id: int) -> Meeting:
     try:
         meeting = db.scalar(
             select(Meeting)
             .options(joinedload(Meeting.contact), joinedload(Meeting.enquiry))
-            .where(Meeting.meeting_id == meeting_id)
+            .where(Meeting.meeting_id == meeting_id, Meeting.organization_id == organization_id)
         )
     except SQLAlchemyError as exc:
         rollback_failed_transaction(db)
@@ -86,11 +89,13 @@ def get_meeting(db: Session, meeting_id: int) -> Meeting:
     return meeting
 
 
-def update_meeting(db: Session, meeting_id: int, data: MeetingUpdate) -> Meeting:
+def update_meeting(
+    db: Session, meeting_id: int, data: MeetingUpdate, *, organization_id: int
+) -> Meeting:
     try:
         with atomic_transaction(db):
-            lock_workspace_schedule(db)
-            meeting = db.get(Meeting, meeting_id)
+            lock_workspace_schedule(db, organization_id)
+            meeting = owned(db, Meeting, meeting_id, organization_id=organization_id)
             if meeting is None:
                 raise APIError("Meeting not found.", 404, "meeting_not_found")
             updates = data.model_dump(exclude_unset=True)
@@ -121,6 +126,7 @@ def update_meeting(db: Session, meeting_id: int, data: MeetingUpdate) -> Meeting
                     starts_at=scheduled_at,
                     duration_minutes=duration,
                     timezone_name=scheduled_timezone,
+                    organization_id=organization_id,
                     exclude_id=meeting.meeting_id,
                 )
                 # Untouched past meetings stay editable; new or reopened times must be future.
@@ -135,6 +141,7 @@ def update_meeting(db: Session, meeting_id: int, data: MeetingUpdate) -> Meeting
             validate_customer_references(
                 db,
                 customer_id,
+                organization_id=organization_id,
                 contact_id=updates.get("contact_id", meeting.contact_id),
                 enquiry_id=updates.get("enquiry_id", meeting.enquiry_id),
             )
@@ -155,14 +162,18 @@ def update_meeting(db: Session, meeting_id: int, data: MeetingUpdate) -> Meeting
         raise APIError("The database operation could not be completed.", 500, "database_error") from exc
 
 
-def list_customer_meetings(db: Session, customer_id: int) -> list[Meeting]:
+def list_customer_meetings(
+    db: Session, customer_id: int, *, organization_id: int
+) -> list[Meeting]:
     try:
-        validate_customer_references(db, customer_id)
+        validate_customer_references(db, customer_id, organization_id=organization_id)
         return list(
             db.scalars(
                 select(Meeting)
                 .options(joinedload(Meeting.contact), joinedload(Meeting.enquiry))
-                .where(Meeting.customer_id == customer_id)
+                .where(
+                    Meeting.customer_id == customer_id, Meeting.organization_id == organization_id
+                )
                 .order_by(Meeting.scheduled_at.desc(), Meeting.meeting_id.desc())
             ).all()
         )

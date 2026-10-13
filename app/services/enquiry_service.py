@@ -10,6 +10,7 @@ from app.database.connection import atomic_transaction
 from app.models import SalesEnquiry
 from app.schemas.sales_enquiry import SalesEnquiryCreate, SalesEnquiryUpdate
 from app.services.activity_validation import (
+    owned,
     require_customer,
     validate_enquiry_reassignment,
 )
@@ -18,11 +19,13 @@ from app.services.scheduling_service import lock_workspace_schedule
 logger = logging.getLogger(__name__)
 
 
-def create_enquiry(db: Session, data: SalesEnquiryCreate) -> SalesEnquiry:
+def create_enquiry(
+    db: Session, data: SalesEnquiryCreate, *, organization_id: int
+) -> SalesEnquiry:
     try:
         with atomic_transaction(db):
-            require_customer(db, data.customer_id)
-            enquiry = SalesEnquiry(**data.model_dump())
+            require_customer(db, data.customer_id, organization_id=organization_id)
+            enquiry = SalesEnquiry(**data.model_dump(), organization_id=organization_id)
             db.add(enquiry)
             db.flush()
             db.refresh(enquiry)
@@ -45,9 +48,9 @@ def create_enquiry(db: Session, data: SalesEnquiryCreate) -> SalesEnquiry:
         ) from exc
 
 
-def get_enquiry(db: Session, enquiry_id: int) -> SalesEnquiry:
+def get_enquiry(db: Session, enquiry_id: int, *, organization_id: int) -> SalesEnquiry:
     try:
-        enquiry = db.get(SalesEnquiry, enquiry_id)
+        enquiry = owned(db, SalesEnquiry, enquiry_id, organization_id=organization_id)
     except SQLAlchemyError as exc:
         log_database_exception(logger, "get_enquiry", exc)
         raise APIError(
@@ -60,21 +63,21 @@ def get_enquiry(db: Session, enquiry_id: int) -> SalesEnquiry:
     return enquiry
 
 
-def update_enquiry(db: Session, enquiry_id: int, data: SalesEnquiryUpdate) -> SalesEnquiry:
+def update_enquiry(
+    db: Session, enquiry_id: int, data: SalesEnquiryUpdate, *, organization_id: int
+) -> SalesEnquiry:
     try:
         with atomic_transaction(db):
             if data.customer_id is not None:
-                lock_workspace_schedule(db)
-            enquiry = db.scalar(
-                select(SalesEnquiry)
-                .where(SalesEnquiry.enquiry_id == enquiry_id)
-                .with_for_update()
+                lock_workspace_schedule(db, organization_id)
+            enquiry = owned(
+                db, SalesEnquiry, enquiry_id, organization_id=organization_id, for_update=True
             )
             if enquiry is None:
                 raise APIError("Sales enquiry not found.", 404, "enquiry_not_found")
             updates = data.model_dump(exclude_unset=True)
             target_customer_id = updates.get("customer_id", enquiry.customer_id)
-            require_customer(db, target_customer_id)
+            require_customer(db, target_customer_id, organization_id=organization_id)
             if target_customer_id != enquiry.customer_id:
                 validate_enquiry_reassignment(db, enquiry.enquiry_id)
             for field, value in updates.items():
@@ -100,13 +103,18 @@ def update_enquiry(db: Session, enquiry_id: int, data: SalesEnquiryUpdate) -> Sa
         ) from exc
 
 
-def list_customer_enquiries(db: Session, customer_id: int) -> list[SalesEnquiry]:
+def list_customer_enquiries(
+    db: Session, customer_id: int, *, organization_id: int
+) -> list[SalesEnquiry]:
     try:
-        require_customer(db, customer_id)
+        require_customer(db, customer_id, organization_id=organization_id)
         return list(
             db.scalars(
                 select(SalesEnquiry)
-                .where(SalesEnquiry.customer_id == customer_id)
+                .where(
+                    SalesEnquiry.customer_id == customer_id,
+                    SalesEnquiry.organization_id == organization_id,
+                )
                 .order_by(SalesEnquiry.created_at.desc(), SalesEnquiry.enquiry_id.desc())
             ).all()
         )

@@ -170,6 +170,7 @@ def test_provider_failure_is_mapped_safely(monkeypatch):
 
 def test_customer_scope_is_enforced():
     context = AgentToolContext(
+        organization_id=1,
         locked_customer_id=1,
         customer_ids={1},
     )
@@ -194,6 +195,7 @@ def test_customer_scope_is_enforced():
 
 def test_enquiry_must_be_retrieved_before_enrichment():
     context = AgentToolContext(
+        organization_id=1,
         locked_customer_id=1,
         customer_ids={1},
         enquiries_by_customer={1: {10}},
@@ -220,6 +222,7 @@ def test_enquiry_must_be_retrieved_before_enrichment():
 
 def test_customer_must_be_retrieved_before_enrichment():
     context = AgentToolContext(
+        organization_id=1,
         locked_customer_id=1,
         customer_ids=set(),
     )

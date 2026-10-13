@@ -18,9 +18,10 @@ def chat_with_agent(
     *,
     model: BaseChatModel | None = None,
     user_id: int = 0,
+    organization_id: int,
 ) -> AgentChatResponse:
     if request.customer_id is not None:
-        customer_service.get_customer(db, request.customer_id)
+        customer_service.get_customer(db, request.customer_id, organization_id=organization_id)
     # Validated before the model runs: only this user's conversation for this customer.
     conversation = agent_conversation_service.resolve(
         db,
@@ -44,6 +45,7 @@ def chat_with_agent(
         request,
         model=model or create_chat_model(),
         user_id=user_id,
+        organization_id=organization_id,
         history=history,
     )
     # A successful CRM lookup grounds the answer in records, not chat memory, so it is kept.

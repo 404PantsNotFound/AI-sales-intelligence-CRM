@@ -52,33 +52,33 @@ def test_all_models_register_expected_tables() -> None:
             "verification_grace_until", "created_at", "updated_at",
         },
         "companies": {
-            "company_id", "company_name", "industry", "website", "address", "city",
+            "organization_id", "company_id", "company_name", "industry", "website", "address", "city",
             "country", "company_size", "description", "created_at", "updated_at",
         },
         "customers": {
-            "customer_id", "company_id", "customer_name", "status", "sales_stage",
+            "organization_id", "customer_id", "company_id", "customer_name", "status", "sales_stage",
             "created_at", "updated_at",
         },
         "contacts": {
-            "contact_id", "customer_id", "name", "job_title", "email", "phone",
+            "organization_id", "contact_id", "customer_id", "name", "job_title", "email", "phone",
             "is_primary", "created_at", "updated_at",
         },
         "sales_enquiries": {
-            "enquiry_id", "customer_id", "product", "enquiry_text", "priority", "status",
+            "organization_id", "enquiry_id", "customer_id", "product", "enquiry_text", "priority", "status",
             "estimated_value", "created_at", "updated_at",
         },
         "meetings": {
-            "meeting_id", "customer_id", "contact_id", "enquiry_id", "scheduled_at",
+            "organization_id", "meeting_id", "customer_id", "contact_id", "enquiry_id", "scheduled_at",
             "scheduled_timezone", "duration", "status", "agenda", "notes", "summary",
             "created_at", "updated_at",
         },
         "calls": {
-            "call_id", "customer_id", "contact_id", "enquiry_id", "call_type", "scheduled_at",
+            "organization_id", "call_id", "customer_id", "contact_id", "enquiry_id", "call_type", "scheduled_at",
             "actual_time", "status", "outcome", "notes", "summary", "next_followup_date",
             "scheduled_timezone", "duration", "created_at", "updated_at",
         },
         "follow_ups": {
-            "followup_id", "customer_id", "enquiry_id", "meeting_id", "call_id", "type",
+            "organization_id", "followup_id", "customer_id", "enquiry_id", "meeting_id", "call_id", "type",
             "due_date", "status", "description", "assigned_to", "completed_at", "created_at",
             "due_timezone", "duration", "updated_at",
         },
@@ -103,10 +103,10 @@ def test_all_models_register_expected_tables() -> None:
             "error_code", "result_message", "started_at", "completed_at",
         },
         "hitl_policy_overrides": {
-            "action_type", "mode", "updated_by_user_id", "updated_at",
+            "organization_id", "action_type", "mode", "updated_by_user_id", "updated_at",
         },
         "hitl_policy_audits": {
-            "audit_id", "action_type", "previous_mode", "new_mode", "changed_by_user_id",
+            "organization_id", "audit_id", "action_type", "previous_mode", "new_mode", "changed_by_user_id",
             "changed_at",
         },
         "hitl_action_audits": {
@@ -164,7 +164,8 @@ def test_foreign_keys_and_history_preserving_delete_rules() -> None:
         assert customer_fk.ondelete == "RESTRICT"
     for table_name in ("meetings", "calls", "follow_ups"):
         for foreign_key in Base.metadata.tables[table_name].foreign_keys:
-            if foreign_key.parent.name != "customer_id":
+            # organization_id is part of the composite tenant key to customers.
+            if foreign_key.parent.name not in {"customer_id", "organization_id"}:
                 assert foreign_key.ondelete == "SET NULL"
 
 

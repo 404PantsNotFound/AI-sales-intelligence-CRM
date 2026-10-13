@@ -138,12 +138,16 @@ def _time_series(
     grain: TimeGrain,
     start_date: date | None,
     end_date: date | None,
+    *,
+    organization_id: int,
 ) -> list[CountTimePoint]:
     period = _period_expression(date_column, grain, db)
     statement = select(period, func.count()).select_from(model)
-    conditions = _range_conditions(date_column, start_date, end_date)
-    if conditions:
-        statement = statement.where(*conditions)
+    conditions = [
+        model.organization_id == organization_id,
+        *_range_conditions(date_column, start_date, end_date),
+    ]
+    statement = statement.where(*conditions)
     statement = statement.group_by(period).order_by(period)
     return [
         CountTimePoint(period=str(label), count=int(count or 0))
@@ -169,6 +173,8 @@ def get_overview_metrics(
     db: Session,
     start_date: date | None = None,
     end_date: date | None = None,
+    *,
+    organization_id: int,
 ) -> OverviewMetrics:
     customer_counts = db.execute(
         select(
@@ -182,12 +188,15 @@ def get_overview_metrics(
             func.coalesce(
                 func.sum(case((Customer.status == "prospect", 1), else_=0)), 0
             ),
-        )
+        ).where(Customer.organization_id == organization_id)
     ).one()
     new_customers = db.scalar(
         select(func.count())
         .select_from(Customer)
-        .where(*_range_conditions(Customer.created_at, start_date, end_date))
+        .where(
+            Customer.organization_id == organization_id,
+            *_range_conditions(Customer.created_at, start_date, end_date),
+        )
     ) or 0
     enquiry_counts = db.execute(
         select(
@@ -202,7 +211,10 @@ def get_overview_metrics(
             func.coalesce(
                 func.sum(case((SalesEnquiry.status == "converted", 1), else_=0)), 0
             ),
-        ).where(*_range_conditions(SalesEnquiry.created_at, start_date, end_date))
+        ).where(
+            SalesEnquiry.organization_id == organization_id,
+            *_range_conditions(SalesEnquiry.created_at, start_date, end_date),
+        )
     ).one()
 
     now = datetime.now(timezone.utc)
@@ -218,6 +230,7 @@ def get_overview_metrics(
         column: ColumnElement[Any],
     ) -> int:
         conditions: list[ColumnElement[bool]] = [
+            model.organization_id == organization_id,
             column >= month_start,
             column < next_month,
         ]
@@ -231,6 +244,7 @@ def get_overview_metrics(
 
     today = _utc_today()
     overdue_conditions: list[ColumnElement[bool]] = [
+        FollowUp.organization_id == organization_id,
         (FollowUp.status == "overdue")
         | (
             FollowUp.status.in_(OPEN_FOLLOWUP_STATUSES)
@@ -238,11 +252,13 @@ def get_overview_metrics(
         )
     ]
     open_followup_conditions: list[ColumnElement[bool]] = [
+        FollowUp.organization_id == organization_id,
         FollowUp.status.in_(OPEN_FOLLOWUP_STATUSES),
         FollowUp.due_date >= datetime.combine(today, time.min, tzinfo=timezone.utc),
         *_range_conditions(FollowUp.due_date, start_date, end_date),
     ]
     completed_followup_conditions: list[ColumnElement[bool]] = [
+        FollowUp.organization_id == organization_id,
         FollowUp.status == "completed",
         *_range_conditions(FollowUp.due_date, start_date, end_date),
     ]
@@ -281,8 +297,13 @@ def get_customer_metrics(
     start_date: date | None = None,
     end_date: date | None = None,
     grain: TimeGrain = "monthly",
+    *,
+    organization_id: int,
 ) -> CustomerMetrics:
-    conditions = _range_conditions(Customer.created_at, start_date, end_date)
+    conditions = [
+        Customer.organization_id == organization_id,
+        *_range_conditions(Customer.created_at, start_date, end_date),
+    ]
     by_status = _count_by(db, Customer.status, conditions=conditions)
     by_sales_stage = _count_by(db, Customer.sales_stage, conditions=conditions)
     industry_label = func.coalesce(Company.industry, literal("Unspecified"))
@@ -300,7 +321,8 @@ def get_customer_metrics(
         by_sales_stage=by_sales_stage,
         by_industry=by_industry,
         created_over_time=_time_series(
-            db, Customer, Customer.created_at, grain, start_date, end_date
+            db, Customer, Customer.created_at, grain, start_date, end_date,
+            organization_id=organization_id,
         ),
         time_grain=grain,
     )
@@ -312,8 +334,13 @@ def get_enquiry_metrics(
     start_date: date | None = None,
     end_date: date | None = None,
     grain: TimeGrain = "monthly",
+    *,
+    organization_id: int,
 ) -> EnquiryMetrics:
-    conditions = _range_conditions(SalesEnquiry.created_at, start_date, end_date)
+    conditions = [
+        SalesEnquiry.organization_id == organization_id,
+        *_range_conditions(SalesEnquiry.created_at, start_date, end_date),
+    ]
     by_status = _count_by(db, SalesEnquiry.status, conditions=conditions)
     by_priority = _count_by(db, SalesEnquiry.priority, conditions=conditions)
     by_product = _count_by(db, SalesEnquiry.product, conditions=conditions)
@@ -340,6 +367,7 @@ def get_enquiry_metrics(
             grain,
             start_date,
             end_date,
+            organization_id=organization_id,
         ),
         total_estimated_value=total_value or ZERO,
         time_grain=grain,
@@ -352,6 +380,8 @@ def get_activity_metrics(
     start_date: date | None = None,
     end_date: date | None = None,
     grain: TimeGrain = "monthly",
+    *,
+    organization_id: int,
 ) -> ActivityMetrics:
     call_date = func.coalesce(Call.actual_time, Call.scheduled_at, Call.created_at)
     series: dict[str, dict[str, int]] = {}
@@ -362,7 +392,8 @@ def get_activity_metrics(
     )
     for name, model, date_column in models:
         for item in _time_series(
-            db, model, date_column, grain, start_date, end_date
+            db, model, date_column, grain, start_date, end_date,
+            organization_id=organization_id,
         ):
             series.setdefault(item.period, {"meetings": 0, "calls": 0, "followups": 0})
             series[item.period][name] = item.count
@@ -375,17 +406,26 @@ def get_activity_metrics(
         meetings_by_status=_count_by(
             db,
             Meeting.status,
-            conditions=_range_conditions(Meeting.scheduled_at, start_date, end_date),
+            conditions=[
+                Meeting.organization_id == organization_id,
+                *_range_conditions(Meeting.scheduled_at, start_date, end_date),
+            ],
         ),
         calls_by_status=_count_by(
             db,
             Call.status,
-            conditions=_range_conditions(call_date, start_date, end_date),
+            conditions=[
+                Call.organization_id == organization_id,
+                *_range_conditions(call_date, start_date, end_date),
+            ],
         ),
         followups_by_status=_count_by(
             db,
             FollowUp.status,
-            conditions=_range_conditions(FollowUp.due_date, start_date, end_date),
+            conditions=[
+                FollowUp.organization_id == organization_id,
+                *_range_conditions(FollowUp.due_date, start_date, end_date),
+            ],
         ),
         time_grain=grain,
     )
@@ -396,8 +436,13 @@ def get_pipeline_metrics(
     db: Session,
     start_date: date | None = None,
     end_date: date | None = None,
+    *,
+    organization_id: int,
 ) -> PipelineMetrics:
-    enquiry_conditions = _range_conditions(SalesEnquiry.created_at, start_date, end_date)
+    enquiry_conditions = [
+        SalesEnquiry.organization_id == organization_id,
+        *_range_conditions(SalesEnquiry.created_at, start_date, end_date),
+    ]
     grouped = db.execute(
         select(
             Customer.sales_stage,
@@ -414,7 +459,11 @@ def get_pipeline_metrics(
         for stage, count, value in grouped
     }
     actual_stages = set(
-        db.scalars(select(Customer.sales_stage).distinct()).all()
+        db.scalars(
+            select(Customer.sales_stage)
+            .where(Customer.organization_id == organization_id)
+            .distinct()
+        ).all()
     )
     stage_order = [stage for stage in SALES_STAGE_ORDER if stage in actual_stages]
     stage_order.extend(sorted(str(stage) for stage in actual_stages if stage not in SALES_STAGE_ORDER))
@@ -435,7 +484,10 @@ def get_pipeline_metrics(
         )
         or 0
     )
-    meeting_conditions = _range_conditions(Meeting.scheduled_at, start_date, end_date)
+    meeting_conditions = [
+        Meeting.organization_id == organization_id,
+        *_range_conditions(Meeting.scheduled_at, start_date, end_date),
+    ]
     meetings_for_enquiry = int(
         db.scalar(
             select(func.count(distinct(Meeting.enquiry_id)))
@@ -456,7 +508,10 @@ def get_pipeline_metrics(
         select(
             func.coalesce(func.sum(case((Customer.sales_stage == "won", 1), else_=0)), 0),
             func.coalesce(func.sum(case((Customer.sales_stage == "lost", 1), else_=0)), 0),
-        ).where(*_range_conditions(Customer.created_at, start_date, end_date))
+        ).where(
+            Customer.organization_id == organization_id,
+            *_range_conditions(Customer.created_at, start_date, end_date),
+        )
     ).one()
     closed_customer_count = int(won_lost[0] or 0) + int(won_lost[1] or 0)
     won_lost_ratio = _decimal_percent(int(won_lost[0] or 0), closed_customer_count)
@@ -483,12 +538,17 @@ def get_followup_metrics(
     db: Session,
     start_date: date | None = None,
     end_date: date | None = None,
+    *,
+    organization_id: int,
 ) -> FollowupMetrics:
     today = _utc_today()
     today_start = datetime.combine(today, time.min, tzinfo=timezone.utc)
     tomorrow = today + timedelta(days=1)
     in_seven_days = today + timedelta(days=8)
-    base_conditions = _range_conditions(FollowUp.due_date, start_date, end_date)
+    base_conditions = [
+        FollowUp.organization_id == organization_id,
+        *_range_conditions(FollowUp.due_date, start_date, end_date),
+    ]
 
     def count(conditions: list[ColumnElement[bool]]) -> int:
         return int(

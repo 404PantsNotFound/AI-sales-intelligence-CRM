@@ -68,6 +68,7 @@ def get_customer_activity(
     db: Session,
     customer_id: int,
     *,
+    organization_id: int,
     activity_type: ActivityType | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -80,19 +81,23 @@ def get_customer_activity(
         )
 
     try:
-        require_customer(db, customer_id)
+        # Children share the verified customer's organization (composite foreign keys).
+        require_customer(db, customer_id, organization_id=organization_id)
         enquiries = db.scalars(
-            select(SalesEnquiry).where(SalesEnquiry.customer_id == customer_id)
+            select(SalesEnquiry).where(
+                SalesEnquiry.customer_id == customer_id,
+                SalesEnquiry.organization_id == organization_id,
+            )
         ).all()
         meetings = db.scalars(
             select(Meeting)
             .options(joinedload(Meeting.contact))
-            .where(Meeting.customer_id == customer_id)
+            .where(Meeting.customer_id == customer_id, Meeting.organization_id == organization_id)
         ).all()
         calls = db.scalars(
             select(Call)
             .options(joinedload(Call.contact))
-            .where(Call.customer_id == customer_id)
+            .where(Call.customer_id == customer_id, Call.organization_id == organization_id)
         ).all()
         followups = db.scalars(
             select(FollowUp)
@@ -101,7 +106,7 @@ def get_customer_activity(
                 joinedload(FollowUp.meeting),
                 joinedload(FollowUp.call),
             )
-            .where(FollowUp.customer_id == customer_id)
+            .where(FollowUp.customer_id == customer_id, FollowUp.organization_id == organization_id)
         ).all()
     except APIError:
         raise
@@ -184,7 +189,9 @@ def get_customer_activity(
         _raise_invalid_customer_data("get_customer_activity", customer_id, exc)
 
 
-def get_customer_overview(db: Session, customer_id: int) -> CustomerOverviewResponse:
+def get_customer_overview(
+    db: Session, customer_id: int, *, organization_id: int
+) -> CustomerOverviewResponse:
     try:
         customer = db.scalar(
             select(Customer)
@@ -200,11 +207,14 @@ def get_customer_overview(db: Session, customer_id: int) -> CustomerOverviewResp
                 selectinload(Customer.followups).joinedload(FollowUp.meeting),
                 selectinload(Customer.followups).joinedload(FollowUp.call),
             )
-            .where(Customer.customer_id == customer_id)
+            .where(
+                Customer.customer_id == customer_id,
+                Customer.organization_id == organization_id,
+            )
         )
         if customer is None:
             raise APIError("Customer not found.", 404, "customer_not_found")
-        activity = get_customer_activity(db, customer_id)
+        activity = get_customer_activity(db, customer_id, organization_id=organization_id)
         return CustomerOverviewResponse(
             customer_id=customer.customer_id,
             customer_name=customer.customer_name,

@@ -21,6 +21,7 @@ from app.models import (
     HitlApprovalDecision,
     HitlExecutionAudit,
     HitlTask,
+    User,
 )
 from app.schemas.agent import AgentActionName
 
@@ -109,6 +110,45 @@ class PendingActionRecord:
     expires_at: datetime
     user_id: int
     payload_fingerprint: str
+
+
+def _pending_count(db: Session, user_id: int) -> int:
+    """Pending proposals in the user's organization: one tenant's backlog never blocks another."""
+    organization_id = (
+        select(User.organization_id).where(User.user_id == user_id).scalar_subquery()
+    )
+    return int(
+        db.scalar(
+            select(func.count())
+            .select_from(HitlActionProposal)
+            .join(User, User.user_id == HitlActionProposal.owner_user_id)
+            .where(
+                HitlActionProposal.status == "pending",
+                User.organization_id == organization_id,
+            )
+        )
+        or 0
+    )
+
+
+def authorize_decision(
+    db: Session,
+    proposal: HitlActionProposal,
+    *,
+    user_id: int,
+    is_admin: bool,
+    message: str,
+) -> None:
+    """Owners may decide their own proposals; admins only those of their own organization."""
+    if proposal.owner_user_id == user_id:
+        return
+    owner = db.get(User, proposal.owner_user_id)
+    actor = db.get(User, user_id)
+    if owner is None or actor is None or owner.organization_id != actor.organization_id:
+        # Another organization's action looks missing, so its ID cannot be probed.
+        raise APIError("Pending action not found.", 404, "action_not_found")
+    if not is_admin:
+        raise APIError(message, 403, "forbidden")
 
 
 def _is_agent_action(value: str) -> TypeGuard[AgentActionName]:
@@ -501,12 +541,8 @@ class PendingActionStore:
             _recover_stale_executions(db, now)
             _expire_incomplete_tasks(db, now)
             _expire_pending(db, now)
-            pending_count = db.scalar(
-                select(func.count())
-                .select_from(HitlActionProposal)
-                .where(HitlActionProposal.status == "pending")
-            )
-            if (pending_count or 0) >= max(1, self.max_capacity):
+            pending_count = _pending_count(db, user_id)
+            if pending_count >= max(1, self.max_capacity):
                 db.commit()
                 raise APIError(
                     "Too many pending actions are currently awaiting a decision. "
@@ -633,12 +669,8 @@ class PendingActionStore:
                     409,
                     "invalid_task_transition",
                 )
-            pending_count = db.scalar(
-                select(func.count())
-                .select_from(HitlActionProposal)
-                .where(HitlActionProposal.status == "pending")
-            )
-            if (pending_count or 0) + len(actions) > max(1, self.max_capacity):
+            pending_count = _pending_count(db, user_id)
+            if pending_count + len(actions) > max(1, self.max_capacity):
                 raise APIError(
                     "Too many pending actions are currently awaiting a decision. "
                     "Please try again shortly.",
@@ -800,12 +832,13 @@ class PendingActionStore:
             proposal = db.get(HitlActionProposal, action_id)
             if proposal is None:
                 raise APIError("Pending action not found.", 404, "action_not_found")
-            if proposal.owner_user_id != user_id and not is_admin:
-                raise APIError(
-                    "You are not authorized to decide this pending action.",
-                    403,
-                    "forbidden",
-                )
+            authorize_decision(
+                db,
+                proposal,
+                user_id=user_id,
+                is_admin=is_admin,
+                message="You are not authorized to decide this pending action.",
+            )
             if proposal.status == "pending" and _utc(proposal.expires_at) <= now:
                 _expire_pending(db, now)
                 db.commit()
@@ -862,12 +895,13 @@ class PendingActionStore:
             proposal = db.get(HitlActionProposal, action_id)
             if proposal is None:
                 raise APIError("Pending action not found.", 404, "action_not_found")
-            if proposal.owner_user_id != user_id and not is_admin:
-                raise APIError(
-                    "You are not authorized to confirm or cancel this pending action.",
-                    403,
-                    "forbidden",
-                )
+            authorize_decision(
+                db,
+                proposal,
+                user_id=user_id,
+                is_admin=is_admin,
+                message="You are not authorized to confirm or cancel this pending action.",
+            )
             if proposal.status == "pending" and _utc(proposal.expires_at) <= now:
                 _expire_pending(db, now)
                 db.commit()
@@ -989,12 +1023,13 @@ class PendingActionStore:
             proposal = db.get(HitlActionProposal, action_id)
             if proposal is None:
                 raise APIError("Pending action not found.", 404, "action_not_found")
-            if proposal.owner_user_id != user_id and not is_admin:
-                raise APIError(
-                    "You are not authorized to confirm or cancel this pending action.",
-                    403,
-                    "forbidden",
-                )
+            authorize_decision(
+                db,
+                proposal,
+                user_id=user_id,
+                is_admin=is_admin,
+                message="You are not authorized to confirm or cancel this pending action.",
+            )
             if proposal.status == "pending" and _utc(proposal.expires_at) <= now:
                 _expire_pending(db, now)
                 db.commit()

@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.agent.langchain_compat import create_compatible_agent
 from app.agent.model import create_chat_model
-from app.agent.tools import build_read_only_tools
+from app.agent.tools import AgentToolContext, build_read_only_tools
+from tests.conftest import legacy_organization_id
 from app.core.config import settings
 from app.models import Customer
 from app.schemas.agent import AgentChatRequest
@@ -29,7 +30,7 @@ class ToolCallingFakeChatModel(FakeMessagesListChatModel):
 
 
 def _tool_outputs(db: Session) -> dict[str, Any]:
-    return {tool.name: tool for tool in build_read_only_tools(db)}
+    return {tool.name: tool for tool in build_read_only_tools(db, AgentToolContext(organization_id=legacy_organization_id(db)))}
 
 
 def _fake_tool_call(
@@ -490,6 +491,8 @@ def test_gemini_model_factory_is_lazy_and_constructs_without_network(
     with agent_sessions() as db:
         from app.agent.agent import build_sales_agent
 
-        agent = build_sales_agent(db, model=model)
+        agent = build_sales_agent(
+            db, model=model, tool_context=AgentToolContext(organization_id=1)
+        )
         assert "tools" in agent.get_graph().nodes
         assert model.bind_tools([]) is not None

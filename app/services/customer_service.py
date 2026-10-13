@@ -10,6 +10,7 @@ from app.core.exceptions import APIError
 from app.core.logging_utils import log_database_exception
 from app.database.connection import atomic_transaction, rollback_failed_transaction
 from app.models import Company, Contact, Customer, SalesEnquiry
+from app.services.activity_validation import owned
 from app.schemas.customer import CustomerUpdate
 from app.schemas.customer_registration import CustomerRegistrationCreate
 
@@ -32,6 +33,8 @@ def _is_duplicate_customer_integrity_error(exc: IntegrityError) -> bool:
 def create_customer(
     db: Session,
     registration: CustomerRegistrationCreate,
+    *,
+    organization_id: int,
 ) -> RegistrationRecords:
     if registration.primary_contact.email is not None:
         if not verify_email(str(registration.primary_contact.email)):
@@ -44,14 +47,19 @@ def create_customer(
     try:
         with atomic_transaction(db):
             normalized_company_name = _normalized_name(registration.company.company_name)
+            # Only this organization's companies: a same-named company elsewhere is a different one.
             company = db.scalar(
                 select(Company)
-                .where(func.lower(func.trim(Company.company_name)) == normalized_company_name)
+                .where(
+                    Company.organization_id == organization_id,
+                    func.lower(func.trim(Company.company_name)) == normalized_company_name,
+                )
                 .order_by(Company.company_id)
                 .limit(1)
             )
             if company is None:
                 company = Company(
+                    organization_id=organization_id,
                     company_name=registration.company.company_name.strip(),
                     industry=registration.company.industry,
                     website=registration.company.website,
@@ -81,6 +89,7 @@ def create_customer(
                 )
 
             customer = Customer(
+                organization_id=organization_id,
                 company=company,
                 customer_name=registration.customer_name.strip(),
                 status=registration.status,
@@ -90,6 +99,7 @@ def create_customer(
             db.flush()
 
             contact = Contact(
+                organization_id=organization_id,
                 customer=customer,
                 name=registration.primary_contact.name,
                 job_title=registration.primary_contact.job_title,
@@ -105,6 +115,7 @@ def create_customer(
             db.flush()
 
             sales_enquiry = SalesEnquiry(
+                organization_id=organization_id,
                 customer=customer,
                 product=registration.sales_enquiry.product,
                 enquiry_text=registration.sales_enquiry.enquiry_text,
@@ -145,11 +156,14 @@ def create_customer(
         ) from exc
 
 
-def get_customer(db: Session, customer_id: int) -> Customer:
+def get_customer(db: Session, customer_id: int, *, organization_id: int) -> Customer:
     try:
         customer = db.scalar(
             select(Customer)
-            .where(Customer.customer_id == customer_id)
+            .where(
+                Customer.customer_id == customer_id,
+                Customer.organization_id == organization_id,
+            )
         )
 
         if customer is None:
@@ -183,17 +197,19 @@ def update_customer(
     db: Session,
     customer_id: int,
     data: CustomerUpdate,
+    *,
+    organization_id: int,
 ) -> Customer:
     try:
         with atomic_transaction(db):
-            customer = db.get(Customer, customer_id)
+            customer = owned(db, Customer, customer_id, organization_id=organization_id)
             if customer is None:
                 raise APIError("Customer not found.", status_code=404, code="customer_not_found")
 
             updates = data.model_dump(exclude_unset=True)
             target_company_id = updates.get("company_id", customer.company_id)
             if "company_id" in updates:
-                company = db.get(Company, target_company_id)
+                company = owned(db, Company, target_company_id, organization_id=organization_id)
                 if company is None:
                     raise APIError("Company not found.", status_code=404, code="company_not_found")
 
@@ -250,13 +266,14 @@ def update_customer(
 def list_customers(
     db: Session,
     *,
+    organization_id: int,
     page: int,
     page_size: int,
     search: str | None = None,
     customer_name: str | None = None,
     company_name: str | None = None,
 ) -> tuple[list[Customer], int]:
-    filters = []
+    filters = [Customer.organization_id == organization_id]
     if search and search.strip():
         pattern = f"%{search.strip()}%"
         filters.append(

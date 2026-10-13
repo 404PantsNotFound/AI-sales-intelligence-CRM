@@ -136,6 +136,7 @@ def get_attention_queue(
     db: Session,
     *,
     now: datetime,
+    organization_id: int,
     stale_days: int = DEFAULT_STALE_DAYS,
     limit: int = DEFAULT_LIMIT,
     new_enquiry_grace_days: int = DEFAULT_NEW_ENQUIRY_GRACE_DAYS,
@@ -153,13 +154,17 @@ def get_attention_queue(
     grace = timedelta(days=new_enquiry_grace_days)
 
     open_customers = select(SalesEnquiry.customer_id).where(
-        SalesEnquiry.status.in_(OPEN_ENQUIRY_STATUSES)
+        SalesEnquiry.organization_id == organization_id,
+        SalesEnquiry.status.in_(OPEN_ENQUIRY_STATUSES),
     )
     enquiries = db.execute(
         select(SalesEnquiry, Customer.customer_name, Company.company_name)
         .join(Customer, SalesEnquiry.customer_id == Customer.customer_id)
         .join(Company, Customer.company_id == Company.company_id)
-        .where(SalesEnquiry.status.in_(OPEN_ENQUIRY_STATUSES))
+        .where(
+            SalesEnquiry.organization_id == organization_id,
+            SalesEnquiry.status.in_(OPEN_ENQUIRY_STATUSES),
+        )
     ).all()
 
     meetings = _by_scope(
@@ -184,7 +189,10 @@ def get_attention_queue(
                     )
                 ).label("next_step"),
             )
-            .where(Meeting.customer_id.in_(open_customers))
+            .where(
+                Meeting.organization_id == organization_id,
+                Meeting.customer_id.in_(open_customers),
+            )
             .group_by(Meeting.customer_id, Meeting.enquiry_id)
         )
     )
@@ -212,7 +220,10 @@ def get_attention_queue(
                     )
                 ).label("next_step"),
             )
-            .where(Call.customer_id.in_(open_customers))
+            .where(
+                Call.organization_id == organization_id,
+                Call.customer_id.in_(open_customers),
+            )
             .group_by(Call.customer_id, Call.enquiry_id)
         )
     )
@@ -246,7 +257,10 @@ def get_attention_queue(
                 func.count(case((is_overdue, 1))).label("overdue_count"),
                 func.min(case((is_overdue, FollowUp.due_date))).label("oldest_overdue"),
             )
-            .where(FollowUp.customer_id.in_(open_customers))
+            .where(
+                FollowUp.organization_id == organization_id,
+                FollowUp.customer_id.in_(open_customers),
+            )
             .group_by(FollowUp.customer_id, FollowUp.enquiry_id)
         )
     )

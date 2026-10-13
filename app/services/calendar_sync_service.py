@@ -356,6 +356,10 @@ def _sync_for_user(
     if connection is None:
         return
     activity = _load_activity(db, activity_type, activity_id)
+    user = db.get(User, user_id)
+    # Revalidated before any Google call: never mirror another organization's activity.
+    if user is None or (activity is not None and activity.organization_id != user.organization_id):
+        return
     wants_event = activity is not None and _wants_event(activity_type, activity)
     cancelled = activity is None or activity.status == "cancelled"
     if link is None and not wants_event:

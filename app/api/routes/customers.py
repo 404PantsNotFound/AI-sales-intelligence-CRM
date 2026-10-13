@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, Path, Query, status
 from sqlalchemy.orm import Session
 
+from app.core.security import get_current_user
 from app.database.connection import get_db
+from app.models import User
 from app.schemas.company import CompanyResponse
 from app.schemas.contact import ContactResponse
 from app.schemas.customer import (
@@ -34,10 +36,12 @@ def test_customers() -> dict[str, str]:
 def register_customer(
     registration: CustomerRegistrationCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> CustomerRegistrationResponse:
     customer, company, contact, sales_enquiry = customer_service.create_customer(
         db,
         registration,
+        organization_id=current_user.organization_id,
     )
     return CustomerRegistrationResponse(
         message="Customer registered successfully",
@@ -56,9 +60,11 @@ def get_customers(
     search: str | None = Query(default=None, max_length=255),
     customer_name: str | None = Query(default=None, max_length=255),
     company_name: str | None = Query(default=None, max_length=255),
+    current_user: User = Depends(get_current_user),
 ) -> CustomerListResponse:
     customers, total = customer_service.list_customers(
         db,
+        organization_id=current_user.organization_id,
         page=page,
         page_size=page_size,
         search=search,
@@ -77,8 +83,11 @@ def get_customers(
 def get_customer(
     customer_id: int = Path(ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> CustomerDetailResponse:
-    customer = customer_service.get_customer(db, customer_id)
+    customer = customer_service.get_customer(
+        db, customer_id, organization_id=current_user.organization_id
+    )
     return CustomerDetailResponse.model_validate(customer)
 
 
@@ -96,7 +105,10 @@ def update_customer(
     data: CustomerUpdate,
     customer_id: int = Path(ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> CustomerResponse:
-    customer = customer_service.update_customer(db, customer_id, data)
+    customer = customer_service.update_customer(
+        db, customer_id, data, organization_id=current_user.organization_id
+    )
     return CustomerResponse.model_validate(customer)
 

@@ -10,7 +10,7 @@ from app.core.logging_utils import log_database_exception
 from app.database.connection import atomic_transaction, rollback_failed_transaction
 from app.models import Call
 from app.schemas.call import CallCreate, CallUpdate
-from app.services.activity_validation import validate_customer_references
+from app.services.activity_validation import owned, validate_customer_references
 from app.services.scheduling_service import (
     ScheduleRequest,
     lock_workspace_schedule,
@@ -29,14 +29,16 @@ def create_call(
     db: Session,
     data: CallCreate,
     *,
+    organization_id: int,
     defer_commit: bool = False,
 ) -> Call:
     try:
         with atomic_transaction(db, commit_existing=not defer_commit):
-            lock_workspace_schedule(db)
+            lock_workspace_schedule(db, organization_id)
             validate_customer_references(
                 db,
                 data.customer_id,
+                organization_id=organization_id,
                 contact_id=data.contact_id,
                 enquiry_id=data.enquiry_id,
             )
@@ -47,6 +49,7 @@ def create_call(
                     duration_minutes=data.duration
                     or settings.scheduling_call_default_duration_minutes,
                     timezone_name=data.scheduled_timezone or "UTC",
+                    organization_id=organization_id,
                 )
                 require_future_start(db, schedule)
                 require_available(db, schedule)
@@ -56,7 +59,7 @@ def create_call(
                 values["duration"] = (
                     data.duration or settings.scheduling_call_default_duration_minutes
                 )
-            call = Call(**values)
+            call = Call(**values, organization_id=organization_id)
             db.add(call)
             db.flush()
             db.refresh(call)
@@ -73,12 +76,12 @@ def create_call(
         raise APIError("The database operation could not be completed.", 500, "database_error") from exc
 
 
-def get_call(db: Session, call_id: int) -> Call:
+def get_call(db: Session, call_id: int, *, organization_id: int) -> Call:
     try:
         call = db.scalar(
             select(Call)
             .options(joinedload(Call.contact), joinedload(Call.enquiry))
-            .where(Call.call_id == call_id)
+            .where(Call.call_id == call_id, Call.organization_id == organization_id)
         )
     except SQLAlchemyError as exc:
         rollback_failed_transaction(db)
@@ -89,11 +92,11 @@ def get_call(db: Session, call_id: int) -> Call:
     return call
 
 
-def update_call(db: Session, call_id: int, data: CallUpdate) -> Call:
+def update_call(db: Session, call_id: int, data: CallUpdate, *, organization_id: int) -> Call:
     try:
         with atomic_transaction(db):
-            lock_workspace_schedule(db)
-            call = db.get(Call, call_id)
+            lock_workspace_schedule(db, organization_id)
+            call = owned(db, Call, call_id, organization_id=organization_id)
             if call is None:
                 raise APIError("Call not found.", 404, "call_not_found")
             updates = data.model_dump(exclude_unset=True)
@@ -123,6 +126,7 @@ def update_call(db: Session, call_id: int, data: CallUpdate) -> Call:
                     timezone_name=updates.get(
                         "scheduled_timezone", call.scheduled_timezone or "UTC"
                     ),
+                    organization_id=organization_id,
                     exclude_id=call.call_id,
                 )
                 # Untouched past calls stay editable; new or reopened times must be future.
@@ -136,6 +140,7 @@ def update_call(db: Session, call_id: int, data: CallUpdate) -> Call:
             validate_customer_references(
                 db,
                 customer_id,
+                organization_id=organization_id,
                 contact_id=updates.get("contact_id", call.contact_id),
                 enquiry_id=updates.get("enquiry_id", call.enquiry_id),
             )
@@ -156,14 +161,14 @@ def update_call(db: Session, call_id: int, data: CallUpdate) -> Call:
         raise APIError("The database operation could not be completed.", 500, "database_error") from exc
 
 
-def list_customer_calls(db: Session, customer_id: int) -> list[Call]:
+def list_customer_calls(db: Session, customer_id: int, *, organization_id: int) -> list[Call]:
     try:
-        validate_customer_references(db, customer_id)
+        validate_customer_references(db, customer_id, organization_id=organization_id)
         return list(
             db.scalars(
                 select(Call)
                 .options(joinedload(Call.contact), joinedload(Call.enquiry))
-                .where(Call.customer_id == customer_id)
+                .where(Call.customer_id == customer_id, Call.organization_id == organization_id)
                 .order_by(Call.actual_time.desc(), Call.scheduled_at.desc(), Call.call_id.desc())
             ).all()
         )

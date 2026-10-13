@@ -9,6 +9,7 @@ from app.database.connection import atomic_transaction, rollback_failed_transact
 from app.models import Customer, SalesEnquiry
 from app.schemas.customer import CustomerUpdate
 from app.schemas.sales_enquiry import SalesEnquiryUpdate
+from app.services.activity_validation import owned
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ def apply_enrichment(
     db: Session,
     *,
     customer_id: int,
+    organization_id: int,
     enquiry_id: int | None = None,
     customer_updates: dict[str, object] | None = None,
     enquiry_updates: dict[str, object] | None = None,
@@ -34,7 +36,7 @@ def apply_enrichment(
 
     try:
         with atomic_transaction(db, commit_existing=not defer_commit):
-            customer = db.get(Customer, customer_id)
+            customer = owned(db, Customer, customer_id, organization_id=organization_id)
 
             if customer is None:
                 raise APIError(
@@ -53,7 +55,7 @@ def apply_enrichment(
                         code="enquiry_id_required",
                     )
 
-                enquiry = db.get(SalesEnquiry, enquiry_id)
+                enquiry = owned(db, SalesEnquiry, enquiry_id, organization_id=organization_id)
 
                 if enquiry is None:
                     raise APIError(

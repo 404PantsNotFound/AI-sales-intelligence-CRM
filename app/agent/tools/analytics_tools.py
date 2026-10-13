@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.database.connection import SessionLocal
 from app.services import analytics_service
 
+from .context import AgentToolContext
+
 
 class SalesAnalyticsInput(BaseModel):
     start_date: date | None = None
@@ -22,9 +24,14 @@ class SalesAnalyticsInput(BaseModel):
 
 def build_analytics_tools(
     db: Session | None = None,
+    context: AgentToolContext | None = None,
     *,
     session_factory: sessionmaker[Session] | None = None,
 ) -> list[StructuredTool]:
+
+    if context is None:
+        raise ValueError("CRM tools require a tenant context.")
+    organization_id = context.organization_id
 
     factory = session_factory
 
@@ -49,31 +56,37 @@ def build_analytics_tools(
                     session,
                     start_date,
                     end_date,
+                    organization_id=organization_id,
                 ).model_dump(mode="json"),
                 "customers": analytics_service.get_customer_metrics(
                     session,
                     start_date,
                     end_date,
+                    organization_id=organization_id,
                 ).model_dump(mode="json"),
                 "enquiries": analytics_service.get_enquiry_metrics(
                     session,
                     start_date,
                     end_date,
+                    organization_id=organization_id,
                 ).model_dump(mode="json"),
                 "activities": analytics_service.get_activity_metrics(
                     session,
                     start_date,
                     end_date,
+                    organization_id=organization_id,
                 ).model_dump(mode="json"),
                 "pipeline": analytics_service.get_pipeline_metrics(
                     session,
                     start_date,
                     end_date,
+                    organization_id=organization_id,
                 ).model_dump(mode="json"),
                 "followups": analytics_service.get_followup_metrics(
                     session,
                     start_date,
                     end_date,
+                    organization_id=organization_id,
                 ).model_dump(mode="json"),
             }
 

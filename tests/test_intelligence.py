@@ -9,12 +9,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.models import Call, Company, Customer, FollowUp, Meeting, SalesEnquiry
 from app.services.hitl_action_registry import validate_operation
 from app.services.intelligence_service import get_attention_queue, suggest_actions
+from tests.conftest import legacy_organization_id
 
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
 
 
 def _customer(db: Session, name: str) -> Customer:
-    company = Company(company_name=f"{name} Ltd")
+    company = Company(organization_id=legacy_organization_id(db), company_name=f"{name} Ltd")
     db.add(company)
     db.flush()
     customer = Customer(company=company, customer_name=name, created_at=NOW - timedelta(days=90))
@@ -105,7 +106,7 @@ def test_each_reason_is_reported_with_its_facts(agent_sessions: sessionmaker[Ses
         _followup(db, healthy, customer, NOW + timedelta(days=4))
         db.commit()
 
-        queue = get_attention_queue(db, now=NOW)
+        queue = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW)
 
     assert _codes(queue, overdue.enquiry_id) == ["overdue_followup"]
     overdue_item = next(item for item in queue.items if item.enquiry_id == overdue.enquiry_id)
@@ -146,7 +147,7 @@ def test_only_open_and_in_progress_enquiries_are_considered(agent_sessions: sess
         included = [_enquiry(db, customer, status=status) for status in ("open", "in_progress")]
         excluded = [_enquiry(db, customer, status=status) for status in ("converted", "closed", "lost")]
         db.commit()
-        queue = get_attention_queue(db, now=NOW)
+        queue = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW)
 
     returned = {item.enquiry_id for item in queue.items}
     assert returned == {enquiry.enquiry_id for enquiry in included}
@@ -175,7 +176,7 @@ def test_only_completed_contact_counts_as_activity(agent_sessions: sessionmaker[
         followup_done = _enquiry(db, customer)
         _followup(db, followup_done, customer, NOW - timedelta(days=40), status="completed", completed_at=recent)
         db.commit()
-        queue = get_attention_queue(db, now=NOW)
+        queue = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW)
 
     item = next(item for item in queue.items if item.enquiry_id == not_counted.enquiry_id)
     assert "no_recent_activity" in [reason.code for reason in item.reasons]
@@ -203,7 +204,7 @@ def test_future_scheduled_activity_is_a_next_step(agent_sessions: sessionmaker[S
         due_yesterday = _enquiry(db, customer)
         _followup(db, due_yesterday, customer, NOW - timedelta(days=1))
         db.commit()
-        queue = get_attention_queue(db, now=NOW)
+        queue = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW)
 
     for enquiry in (meeting, call, due_today):
         assert "no_next_step" not in _codes(queue, enquiry.enquiry_id)
@@ -227,7 +228,7 @@ def test_activity_on_one_enquiry_does_not_clear_its_sibling(agent_sessions: sess
         _call(db, worked, customer, NOW + timedelta(days=2), "scheduled")
         _followup(db, worked, customer, NOW - timedelta(days=4))
         db.commit()
-        queue = get_attention_queue(db, now=NOW)
+        queue = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW)
 
     assert _codes(queue, worked.enquiry_id) == ["overdue_followup"]
     assert _codes(queue, neglected.enquiry_id) == ["no_recent_activity", "no_next_step"]
@@ -248,7 +249,7 @@ def test_customer_only_activity_clears_no_enquiry(agent_sessions: sessionmaker[S
         _followup(db, None, customer, NOW - timedelta(days=40), status="completed", completed_at=NOW - timedelta(hours=5))
         _call(db, None, customer, NOW + timedelta(days=2), "scheduled")
         db.commit()
-        queue = get_attention_queue(db, now=NOW)
+        queue = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW)
 
     for enquiry in (first, second):
         assert _codes(queue, enquiry.enquiry_id) == ["no_recent_activity", "no_next_step"]
@@ -275,7 +276,7 @@ def test_customer_only_overdue_followup_is_not_presented_as_enquiry_specific(
         _followup(db, None, customer, NOW - timedelta(days=3), status="overdue")
         _followup(db, second, customer, NOW - timedelta(days=2))
         db.commit()
-        queue = get_attention_queue(db, now=NOW)
+        queue = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW)
 
     # Healthy enquiry with only customer-level overdue work: not queued as overdue.
     assert _codes(queue, first.enquiry_id) is None
@@ -296,18 +297,18 @@ def test_fixed_clock_threshold_boundary_and_configurable_days(agent_sessions: se
         _meeting(db, enquiry, customer, NOW + timedelta(days=30), "scheduled")
         db.commit()
 
-        assert _codes(get_attention_queue(db, now=NOW), enquiry.enquiry_id) == ["no_recent_activity"]
+        assert _codes(get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW), enquiry.enquiry_id) == ["no_recent_activity"]
         just_before = NOW - timedelta(seconds=1)
-        assert _codes(get_attention_queue(db, now=just_before), enquiry.enquiry_id) is None
-        assert _codes(get_attention_queue(db, now=NOW, stale_days=30), enquiry.enquiry_id) is None
+        assert _codes(get_attention_queue(db, organization_id=legacy_organization_id(db), now=just_before), enquiry.enquiry_id) is None
+        assert _codes(get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW, stale_days=30), enquiry.enquiry_id) is None
         # A naive `now` is read as UTC, the storage convention.
-        naive = get_attention_queue(db, now=NOW.replace(tzinfo=None))
+        naive = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW.replace(tzinfo=None))
         assert _codes(naive, enquiry.enquiry_id) == ["no_recent_activity"]
         assert naive.today_utc.isoformat() == "2026-10-20"
         with pytest.raises(ValueError):
-            get_attention_queue(db, now=NOW, stale_days=0)
+            get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW, stale_days=0)
         with pytest.raises(ValueError):
-            get_attention_queue(db, now=NOW, limit=0)
+            get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW, limit=0)
 
 
 def test_ordering_is_rule_based_and_deterministic(agent_sessions: sessionmaker[Session]) -> None:
@@ -330,9 +331,9 @@ def test_ordering_is_rule_based_and_deterministic(agent_sessions: sessionmaker[S
         _followup(db, overdue_low, customer, NOW - timedelta(days=3))
         db.commit()
 
-        first = get_attention_queue(db, now=NOW)
-        second = get_attention_queue(db, now=NOW)
-        limited = get_attention_queue(db, now=NOW, limit=2)
+        first = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW)
+        second = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW)
+        limited = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW, limit=2)
 
     expected = [
         overdue_low.enquiry_id,
@@ -369,11 +370,13 @@ def test_query_count_does_not_grow_with_enquiries(
         statements.append(args[2])
 
     def run() -> int:
+        with agent_sessions() as db:
+            organization_id = legacy_organization_id(db)
         statements.clear()
         event.listen(agent_engine, "before_cursor_execute", record)
         try:
             with agent_sessions() as db:
-                get_attention_queue(db, now=NOW)
+                get_attention_queue(db, organization_id=organization_id, now=NOW)
         finally:
             event.remove(agent_engine, "before_cursor_execute", record)
         return len(statements)
@@ -434,11 +437,11 @@ def test_new_enquiry_grace_period_delays_only_no_next_step(agent_sessions: sessi
         _call(db, booked, customer, NOW + timedelta(days=1), "scheduled")
         db.commit()
 
-        queue = get_attention_queue(db, now=NOW)
-        disabled = get_attention_queue(db, now=NOW, new_enquiry_grace_days=0)
-        longer = get_attention_queue(db, now=NOW, new_enquiry_grace_days=7)
+        queue = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW)
+        disabled = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW, new_enquiry_grace_days=0)
+        longer = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW, new_enquiry_grace_days=7)
         with pytest.raises(ValueError):
-            get_attention_queue(db, now=NOW, new_enquiry_grace_days=-1)
+            get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW, new_enquiry_grace_days=-1)
 
     assert queue.new_enquiry_grace_days == 3
     assert _codes(queue, inside.enquiry_id) is None
@@ -459,8 +462,8 @@ def test_grace_period_never_hides_overdue_or_inactivity(agent_sessions: sessionm
         _followup(db, overdue, customer, NOW - timedelta(hours=23))  # due yesterday (UTC)
         quiet = _enquiry(db, customer, created_days_ago=2)
         db.commit()
-        defaults = get_attention_queue(db, now=NOW)
-        queue = get_attention_queue(db, now=NOW, stale_days=1)
+        defaults = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW)
+        queue = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW, stale_days=1)
 
     assert _codes(defaults, overdue.enquiry_id) == ["overdue_followup"]
     assert _codes(defaults, quiet.enquiry_id) is None
@@ -539,7 +542,7 @@ def test_queue_suggestions_use_only_the_enquirys_own_facts(agent_sessions: sessi
         _followup(db, None, customer, NOW - timedelta(days=9))
         _call(db, None, customer, NOW + timedelta(days=1), "scheduled")
         db.commit()
-        queue = get_attention_queue(db, now=NOW)
+        queue = get_attention_queue(db, organization_id=legacy_organization_id(db), now=NOW)
 
     quiet_item = next(item for item in queue.items if item.enquiry_id == quiet.enquiry_id)
     assert quiet_item.customer_level_overdue_followup_count == 1

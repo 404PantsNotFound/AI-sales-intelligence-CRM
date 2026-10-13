@@ -10,6 +10,7 @@ from app.database.connection import atomic_transaction
 from app.models import Contact
 from app.schemas.contact import ContactCreate, ContactUpdate
 from app.services.activity_validation import (
+    owned,
     require_customer,
     validate_contact_reassignment,
 )
@@ -34,16 +35,16 @@ def _clear_primary_contacts(
     db.execute(stmt)
 
 
-def create_contact(db: Session, data: ContactCreate) -> Contact:
+def create_contact(db: Session, data: ContactCreate, *, organization_id: int) -> Contact:
     try:
         with atomic_transaction(db):
-            require_customer(db, data.customer_id)
+            require_customer(db, data.customer_id, organization_id=organization_id)
             if data.is_primary:
                 _clear_primary_contacts(db, data.customer_id)
             payload = data.model_dump()
             if payload.get("email") is not None:
                 payload["email"] = str(payload["email"])
-            contact = Contact(**payload)
+            contact = Contact(**payload, organization_id=organization_id)
             db.add(contact)
             db.flush()
             db.refresh(contact)
@@ -66,9 +67,9 @@ def create_contact(db: Session, data: ContactCreate) -> Contact:
         ) from exc
 
 
-def get_contact(db: Session, contact_id: int) -> Contact:
+def get_contact(db: Session, contact_id: int, *, organization_id: int) -> Contact:
     try:
-        contact = db.get(Contact, contact_id)
+        contact = owned(db, Contact, contact_id, organization_id=organization_id)
     except SQLAlchemyError as exc:
         log_database_exception(logger, "get_contact", exc)
         raise APIError(
@@ -81,21 +82,21 @@ def get_contact(db: Session, contact_id: int) -> Contact:
     return contact
 
 
-def update_contact(db: Session, contact_id: int, data: ContactUpdate) -> Contact:
+def update_contact(
+    db: Session, contact_id: int, data: ContactUpdate, *, organization_id: int
+) -> Contact:
     try:
         with atomic_transaction(db):
             if data.customer_id is not None:
-                lock_workspace_schedule(db)
-            contact = db.scalar(
-                select(Contact)
-                .where(Contact.contact_id == contact_id)
-                .with_for_update()
+                lock_workspace_schedule(db, organization_id)
+            contact = owned(
+                db, Contact, contact_id, organization_id=organization_id, for_update=True
             )
             if contact is None:
                 raise APIError("Contact not found.", 404, "contact_not_found")
             updates = data.model_dump(exclude_unset=True)
             target_customer_id = updates.get("customer_id", contact.customer_id)
-            require_customer(db, target_customer_id)
+            require_customer(db, target_customer_id, organization_id=organization_id)
             if target_customer_id != contact.customer_id:
                 validate_contact_reassignment(db, contact.contact_id)
             if updates.get("email") is not None:
@@ -129,13 +130,17 @@ def update_contact(db: Session, contact_id: int, data: ContactUpdate) -> Contact
         ) from exc
 
 
-def list_customer_contacts(db: Session, customer_id: int) -> list[Contact]:
+def list_customer_contacts(
+    db: Session, customer_id: int, *, organization_id: int
+) -> list[Contact]:
     try:
-        require_customer(db, customer_id)
+        require_customer(db, customer_id, organization_id=organization_id)
         return list(
             db.scalars(
                 select(Contact)
-                .where(Contact.customer_id == customer_id)
+                .where(
+                    Contact.customer_id == customer_id, Contact.organization_id == organization_id
+                )
                 .order_by(Contact.is_primary.desc(), Contact.contact_id.asc())
             ).all()
         )

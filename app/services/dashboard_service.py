@@ -62,6 +62,8 @@ def _activity(
 def get_workspace_activities(
     db: Session,
     activity_range: DashboardActivityRange,
+    *,
+    organization_id: int,
 ) -> DashboardActivityListResponse:
     starts_after = activity_range.start_at.astimezone(_UTC)
     starts_before = activity_range.end_at.astimezone(_UTC)
@@ -71,6 +73,7 @@ def get_workspace_activities(
         .join(Customer, Customer.customer_id == Meeting.customer_id)
         .join(Company, Company.company_id == Customer.company_id)
         .where(
+            Meeting.organization_id == organization_id,
             Meeting.scheduled_at >= starts_after,
             Meeting.scheduled_at < starts_before,
         )
@@ -81,6 +84,7 @@ def get_workspace_activities(
         .join(Customer, Customer.customer_id == Call.customer_id)
         .join(Company, Company.company_id == Customer.company_id)
         .where(
+            Call.organization_id == organization_id,
             Call.scheduled_at.is_not(None),
             Call.scheduled_at >= starts_after,
             Call.scheduled_at < starts_before,
@@ -92,6 +96,7 @@ def get_workspace_activities(
         .join(Customer, Customer.customer_id == FollowUp.customer_id)
         .join(Company, Company.company_id == Customer.company_id)
         .where(
+            FollowUp.organization_id == organization_id,
             or_(
                 and_(
                     FollowUp.due_date >= starts_after,

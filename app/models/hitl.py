@@ -166,6 +166,14 @@ class HitlPolicyOverride(Base):
         ),
     )
 
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "organizations.organization_id",
+            ondelete="RESTRICT",
+            name="fk_hitl_policy_overrides_organization_id_organizations",
+        ),
+        primary_key=True,
+    )
     action_type: Mapped[str] = mapped_column(String(64), primary_key=True)
     mode: Mapped[str] = mapped_column(String(32), nullable=False)
     updated_by_user_id: Mapped[int | None] = mapped_column(
@@ -188,9 +196,18 @@ class HitlPolicyAudit(Base):
             name="ck_hitl_policy_audits_new_mode",
         ),
         Index("ix_hitl_policy_audits_action_changed", "action_type", "changed_at"),
+        Index("ix_hitl_policy_audits_organization_changed", "organization_id", "changed_at"),
     )
 
     audit_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "organizations.organization_id",
+            ondelete="RESTRICT",
+            name="fk_hitl_policy_audits_organization_id_organizations",
+        ),
+        nullable=False,
+    )
     action_type: Mapped[str] = mapped_column(String(64), nullable=False)
     previous_mode: Mapped[str] = mapped_column(String(32), nullable=False)
     new_mode: Mapped[str] = mapped_column(String(32), nullable=False)

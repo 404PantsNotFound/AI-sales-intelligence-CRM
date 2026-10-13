@@ -37,7 +37,9 @@ def chat(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AgentChatResponse:
-    return agent_service.chat_with_agent(db, request, user_id=current_user.user_id)
+    return agent_service.chat_with_agent(
+        db, request, user_id=current_user.user_id, organization_id=current_user.organization_id
+    )
 
 
 @router.get(
@@ -128,6 +130,7 @@ def create_agent_task(
         db,
         request,
         user_id=current_user.user_id,
+        organization_id=current_user.organization_id,
     )
 
 
@@ -144,6 +147,7 @@ def list_agent_tasks(
     return hitl_task_service.list_tasks(
         db,
         user_id=current_user.user_id,
+        organization_id=current_user.organization_id,
     )
 
 
@@ -162,6 +166,7 @@ def resume_agent_task(
         db,
         task_id,
         user_id=current_user.user_id,
+        organization_id=current_user.organization_id,
     )
 
 
@@ -182,6 +187,7 @@ def submit_agent_task_input(
         task_id,
         request,
         user_id=current_user.user_id,
+        organization_id=current_user.organization_id,
     )
 
 
@@ -214,7 +220,7 @@ def list_agent_policies(
 ) -> dict[str, AgentActionMode]:
     if current_user.role != "admin":
         raise APIError("Only administrators can view autonomy policy settings.", 403, "forbidden")
-    return list_action_policies(db)
+    return list_action_policies(db, organization_id=current_user.organization_id)
 
 
 @router.put(
@@ -240,6 +246,7 @@ def update_agent_policy(
         db,
         action,
         payload.mode,
+        organization_id=current_user.organization_id,
         changed_by=current_user.email,
     )
 
@@ -254,8 +261,11 @@ def update_agent_policy(
 def customer_summary(
     customer_id: int = Path(ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> CustomerSummaryResponse:
-    return ai_service.generate_customer_summary(db, customer_id)
+    return ai_service.generate_customer_summary(
+        db, customer_id, organization_id=current_user.organization_id
+    )
 
 
 @router.api_route(
@@ -268,8 +278,11 @@ def customer_summary(
 def meeting_brief(
     meeting_id: int = Path(ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> MeetingBriefResponse:
-    return ai_service.generate_meeting_brief(db, meeting_id)
+    return ai_service.generate_meeting_brief(
+        db, meeting_id, organization_id=current_user.organization_id
+    )
 
 
 @router.get("/test")

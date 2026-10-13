@@ -27,7 +27,9 @@ def create_meeting(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> MeetingResponse:
-    response = MeetingResponse.model_validate(meeting_service.create_meeting(db, data))
+    response = MeetingResponse.model_validate(
+        meeting_service.create_meeting(db, data, organization_id=current_user.organization_id)
+    )
     calendar_sync_service.sync_activity(
         db, "meeting", response.meeting_id, created_by_user_id=current_user.user_id
     )
@@ -38,8 +40,11 @@ def create_meeting(
 def get_meeting(
     meeting_id: int = Path(ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> MeetingResponse:
-    return MeetingResponse.model_validate(meeting_service.get_meeting(db, meeting_id))
+    return MeetingResponse.model_validate(
+        meeting_service.get_meeting(db, meeting_id, organization_id=current_user.organization_id)
+    )
 
 
 @router.put("/{meeting_id}", response_model=MeetingResponse, summary="Update a meeting")
@@ -47,9 +52,12 @@ def update_meeting(
     data: MeetingUpdate,
     meeting_id: int = Path(ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> MeetingResponse:
     response = MeetingResponse.model_validate(
-        meeting_service.update_meeting(db, meeting_id, data)
+        meeting_service.update_meeting(
+            db, meeting_id, data, organization_id=current_user.organization_id
+        )
     )
     calendar_sync_service.sync_activity(db, "meeting", meeting_id)
     return response
@@ -63,9 +71,12 @@ def update_meeting(
 def list_customer_meetings(
     customer_id: int = Path(ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> list[MeetingResponse]:
     return [
         MeetingResponse.model_validate(item)
-        for item in meeting_service.list_customer_meetings(db, customer_id)
+        for item in meeting_service.list_customer_meetings(
+            db, customer_id, organization_id=current_user.organization_id
+        )
     ]
 

@@ -12,6 +12,7 @@ from app.models.crm import (
     User,
 )
 from app.models.organization import Organization
+from app.models import tenancy  # noqa: F401  (registers the write-time tenant guard)
 from app.models.hitl import (
     HitlActionAudit,
     HitlActionProposal,

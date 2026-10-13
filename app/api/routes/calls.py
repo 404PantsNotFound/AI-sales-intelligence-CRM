@@ -27,7 +27,9 @@ def create_call(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> CallResponse:
-    response = CallResponse.model_validate(call_service.create_call(db, data))
+    response = CallResponse.model_validate(
+        call_service.create_call(db, data, organization_id=current_user.organization_id)
+    )
     calendar_sync_service.sync_activity(
         db, "call", response.call_id, created_by_user_id=current_user.user_id
     )
@@ -35,8 +37,14 @@ def create_call(
 
 
 @router.get("/{call_id}", response_model=CallResponse, summary="Get a call")
-def get_call(call_id: int = Path(ge=1), db: Session = Depends(get_db)) -> CallResponse:
-    return CallResponse.model_validate(call_service.get_call(db, call_id))
+def get_call(
+    call_id: int = Path(ge=1),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CallResponse:
+    return CallResponse.model_validate(
+        call_service.get_call(db, call_id, organization_id=current_user.organization_id)
+    )
 
 
 @router.put("/{call_id}", response_model=CallResponse, summary="Update a call")
@@ -44,8 +52,11 @@ def update_call(
     data: CallUpdate,
     call_id: int = Path(ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> CallResponse:
-    response = CallResponse.model_validate(call_service.update_call(db, call_id, data))
+    response = CallResponse.model_validate(
+        call_service.update_call(db, call_id, data, organization_id=current_user.organization_id)
+    )
     calendar_sync_service.sync_activity(db, "call", call_id)
     return response
 
@@ -58,9 +69,12 @@ def update_call(
 def list_customer_calls(
     customer_id: int = Path(ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> list[CallResponse]:
     return [
         CallResponse.model_validate(item)
-        for item in call_service.list_customer_calls(db, customer_id)
+        for item in call_service.list_customer_calls(
+            db, customer_id, organization_id=current_user.organization_id
+        )
     ]
 

@@ -5,8 +5,17 @@ from app.core.exceptions import APIError
 from app.models import Call, Contact, Customer, FollowUp, Meeting, SalesEnquiry
 
 
-def require_customer(db: Session, customer_id: int) -> Customer:
-    customer = db.get(Customer, customer_id)
+def owned(db: Session, model, record_id: int, *, organization_id: int, for_update: bool = False):
+    """The record if it is in this organization, else None: other tenants' rows look missing."""
+    key = getattr(model, model.__mapper__.primary_key[0].key)
+    statement = select(model).where(key == record_id, model.organization_id == organization_id)
+    if for_update:
+        statement = statement.with_for_update()
+    return db.scalar(statement)
+
+
+def require_customer(db: Session, customer_id: int, *, organization_id: int) -> Customer:
+    customer = owned(db, Customer, customer_id, organization_id=organization_id)
     if customer is None:
         raise APIError("Customer not found.", status_code=404, code="customer_not_found")
     return customer
@@ -75,13 +84,14 @@ def validate_customer_references(
     db: Session,
     customer_id: int,
     *,
+    organization_id: int,
     contact_id: int | None = None,
     enquiry_id: int | None = None,
     meeting_id: int | None = None,
     call_id: int | None = None,
     followup_id: int | None = None,
 ) -> None:
-    require_customer(db, customer_id)
+    require_customer(db, customer_id, organization_id=organization_id)
     references = (
         (Contact, contact_id, "contact"),
         (SalesEnquiry, enquiry_id, "enquiry"),
@@ -94,6 +104,7 @@ def validate_customer_references(
             continue
         record = db.scalar(
             select(model).where(
+                model.organization_id == organization_id,
                 model.customer_id == customer_id,
                 getattr(model, f"{label}_id") == record_id,
             ).with_for_update()

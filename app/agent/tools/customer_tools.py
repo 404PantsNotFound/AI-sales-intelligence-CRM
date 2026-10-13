@@ -20,6 +20,10 @@ def build_customer_tools(
     session_factory: sessionmaker[Session] | None = None,
 ) -> list[StructuredTool]:
 
+    if context is None:
+        raise ValueError("CRM tools require a tenant context.")
+    organization_id = context.organization_id
+
     factory = session_factory
 
     def get_session() -> tuple[Session, bool]:
@@ -45,6 +49,7 @@ def build_customer_tools(
         try:
             customers, total = customer_service.list_customers(
                 session,
+                organization_id=organization_id,
                 page=1,
                 page_size=10,
                 search=search,
@@ -88,7 +93,9 @@ def build_customer_tools(
             if context is not None:
                 context.ensure_customer_access(customer_id)
 
-            customer = customer_service.get_customer(session, customer_id)
+            customer = customer_service.get_customer(
+                session, customer_id, organization_id=organization_id
+            )
             detail = CustomerDetailResponse.model_validate(customer).model_dump(
                 mode="json"
             )
@@ -141,7 +148,9 @@ def build_customer_tools(
             if context is not None:
                 context.ensure_customer_access(customer_id)
 
-            customer = customer_service.get_customer(session, customer_id)
+            customer = customer_service.get_customer(
+                session, customer_id, organization_id=organization_id
+            )
 
             if context is not None:
                 context.remember_customer(customer.customer_id)

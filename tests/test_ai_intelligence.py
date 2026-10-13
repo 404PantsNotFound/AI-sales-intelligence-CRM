@@ -15,6 +15,7 @@ from app.services.ai_service import (
 )
 from app.models import Company, Customer, Meeting
 from app.schemas.agent import CustomerSummaryOutput, MeetingBriefOutput
+from tests.conftest import legacy_organization_id
 
 
 class StructuredFakeModel:
@@ -198,7 +199,7 @@ def test_customer_summary_no_activity_history(
 ) -> None:
     now = datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc)
     with agent_sessions() as db:
-        company = Company(company_name="Quiet Co")
+        company = Company(organization_id=legacy_organization_id(db), company_name="Quiet Co")
         db.add(company)
         db.flush()
         customer = Customer(
@@ -307,7 +308,7 @@ def test_meeting_brief_missing_optional_contact_and_enquiry(
 ) -> None:
     now = datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc)
     with agent_sessions() as db:
-        company = Company(company_name="Sparse Co")
+        company = Company(organization_id=legacy_organization_id(db), company_name="Sparse Co")
         db.add(company)
         db.flush()
         customer = Customer(

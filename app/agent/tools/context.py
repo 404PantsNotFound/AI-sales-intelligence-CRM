@@ -6,6 +6,9 @@ from app.core.exceptions import APIError
 
 @dataclass
 class AgentToolContext:
+    # Set only from the authenticated user, never from model or client input; every
+    # tool scopes its reads and writes to this organization.
+    organization_id: int
     locked_customer_id: int | None = None
     timezone_name: str | None = None
     # The user's current chat message only, never earlier turns.

@@ -40,6 +40,8 @@ class ScheduleRequest:
     starts_at: datetime
     duration_minutes: int
     timezone_name: str
+    # Conflicts and the lock are per organization; another tenant's calendar is invisible.
+    organization_id: int
     exclude_id: int | None = None
     record_id: int | None = None
 
@@ -52,16 +54,16 @@ def default_duration(activity_type: ActivityType) -> int:
     }[activity_type]
 
 
-def _workspace_schedule_lock_statement():
+def _workspace_schedule_lock_statement(organization_id: int):
     return (
         select(SchedulingLock)
-        .where(SchedulingLock.lock_id == 1)
+        .where(SchedulingLock.lock_id == organization_id)
         .with_for_update()
     )
 
 
-def lock_workspace_schedule(db: Session) -> None:
-    lock = db.scalar(_workspace_schedule_lock_statement())
+def lock_workspace_schedule(db: Session, organization_id: int) -> None:
+    lock = db.scalar(_workspace_schedule_lock_statement(organization_id))
     if lock is None:
         raise APIError(
             "Scheduling is unavailable until the scheduling lock migration is applied.",
@@ -92,6 +94,7 @@ def _normalize_request(request: ScheduleRequest) -> ScheduleRequest:
         starts_at=request.starts_at.astimezone(_UTC),
         duration_minutes=request.duration_minutes,
         timezone_name=timezone_name,
+        organization_id=request.organization_id,
         exclude_id=request.exclude_id,
         record_id=request.record_id,
     )
@@ -100,6 +103,7 @@ def _normalize_request(request: ScheduleRequest) -> ScheduleRequest:
 def _busy_slots(
     db: Session,
     *,
+    organization_id: int,
     starts_before: datetime,
     starts_after: datetime,
     exclude: tuple[ActivityType, int] | None = None,
@@ -109,6 +113,7 @@ def _busy_slots(
     meeting_query = (
         select(Meeting)
         .where(
+            Meeting.organization_id == organization_id,
             Meeting.status.in_(_SCHEDULED_MEETING_STATUSES),
             Meeting.scheduled_at < starts_before,
             Meeting.scheduled_at >= starts_after,
@@ -133,6 +138,7 @@ def _busy_slots(
     call_query = (
         select(Call)
         .where(
+            Call.organization_id == organization_id,
             Call.status.in_(_SCHEDULED_CALL_STATUSES),
             Call.scheduled_at.is_not(None),
             Call.scheduled_at < starts_before,
@@ -158,6 +164,7 @@ def _busy_slots(
     followup_query = (
         select(FollowUp)
         .where(
+            FollowUp.organization_id == organization_id,
             FollowUp.status.in_(_ACTIVE_FOLLOWUP_STATUSES),
             FollowUp.due_date < starts_before,
             FollowUp.due_date >= starts_after,
@@ -283,11 +290,12 @@ def inspect_availability(
 ) -> dict[str, object]:
     request = _normalize_request(request)
     if acquire_lock:
-        lock_workspace_schedule(db)
+        lock_workspace_schedule(db, request.organization_id)
     start = request.starts_at
     end = start + timedelta(minutes=request.duration_minutes)
     busy = _busy_slots(
         db,
+        organization_id=request.organization_id,
         starts_before=max(_search_end(request), end),
         starts_after=start - timedelta(minutes=_MAX_ACTIVITY_DURATION_MINUTES),
         exclude=(request.activity_type, request.exclude_id)
@@ -337,6 +345,7 @@ def require_future_start(db: Session, request: ScheduleRequest) -> None:
     anchor = replace(request, starts_at=now)
     busy = _busy_slots(
         db,
+        organization_id=request.organization_id,
         starts_before=_search_end(anchor),
         starts_after=now - timedelta(minutes=_MAX_ACTIVITY_DURATION_MINUTES),
     )
@@ -389,15 +398,20 @@ def require_available(
 def validate_schedule_batch(
     db: Session,
     requests: list[ScheduleRequest],
+    *,
+    organization_id: int,
 ) -> None:
-    lock_workspace_schedule(db)
+    lock_workspace_schedule(db, organization_id)
     accepted: list[ScheduleSlot] = []
     for raw_request in requests:
+        if raw_request.organization_id != organization_id:
+            raise ValueError("A schedule batch must belong to one organization.")
         request = _normalize_request(raw_request)
         start = request.starts_at
         end = start + timedelta(minutes=request.duration_minutes)
         existing = _busy_slots(
             db,
+            organization_id=organization_id,
             starts_before=max(_search_end(request), end),
             starts_after=start - timedelta(minutes=_MAX_ACTIVITY_DURATION_MINUTES),
             lock_rows=True,

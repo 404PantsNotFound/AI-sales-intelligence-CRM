@@ -8,10 +8,11 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.agent.tools import build_read_only_tools
+from app.agent.tools import AgentToolContext, build_read_only_tools
 from app.models import Company, Customer, FollowUp, SalesEnquiry
 from app.schemas.analytics import AnalyticsDateRange
 from app.services import analytics_service
+from tests.conftest import legacy_organization_id
 
 
 def _add_customer(
@@ -24,7 +25,7 @@ def _add_customer(
     industry: str | None,
     created_at: datetime,
 ) -> Customer:
-    company = Company(company_name=company_name, industry=industry)
+    company = Company(organization_id=legacy_organization_id(db), company_name=company_name, industry=industry)
     db.add(company)
     db.flush()
     customer = Customer(
@@ -68,6 +69,7 @@ def test_overview_metrics_counts_crm_records(
             db,
             date(2026, 10, 1),
             date(2026, 10, 31),
+            organization_id=legacy_organization_id(db),
         )
 
     assert metrics.total_customers == 3
@@ -110,10 +112,10 @@ def test_customer_and_enquiry_distributions_and_value(
         )
         db.commit()
         customers = analytics_service.get_customer_metrics(
-            db, date(2026, 10, 1), date(2026, 10, 31), "monthly"
+            db, date(2026, 10, 1), date(2026, 10, 31), "monthly", organization_id=legacy_organization_id(db)
         )
         enquiries = analytics_service.get_enquiry_metrics(
-            db, date(2026, 10, 1), date(2026, 10, 31), "weekly"
+            db, date(2026, 10, 1), date(2026, 10, 31), "weekly", organization_id=legacy_organization_id(db)
         )
 
     assert {item.label: item.count for item in customers.by_status} == {
@@ -154,10 +156,10 @@ def test_pipeline_and_activity_analytics_use_linked_crm_data(
 ) -> None:
     with agent_sessions() as db:
         pipeline = analytics_service.get_pipeline_metrics(
-            db, date(2026, 10, 1), date(2026, 10, 31)
+            db, date(2026, 10, 1), date(2026, 10, 31), organization_id=legacy_organization_id(db)
         )
         activities = analytics_service.get_activity_metrics(
-            db, date(2026, 10, 1), date(2026, 10, 31), "monthly"
+            db, date(2026, 10, 1), date(2026, 10, 31), "monthly", organization_id=legacy_organization_id(db)
         )
 
     stages = {item.label: item for item in pipeline.by_sales_stage}
@@ -215,7 +217,7 @@ def test_followup_due_windows_and_statuses(
             ]
         )
         db.commit()
-        metrics = analytics_service.get_followup_metrics(db)
+        metrics = analytics_service.get_followup_metrics(db, organization_id=legacy_organization_id(db))
 
     assert metrics.pending == 2
     assert metrics.overdue == 1
@@ -239,8 +241,8 @@ def test_empty_metrics_date_validation_and_api(
         AnalyticsDateRange(start_date=date(2026, 10, 2), end_date=date(2026, 10, 1))
 
     with agent_sessions() as db:
-        empty = analytics_service.get_enquiry_metrics(db)
-        overview = analytics_service.get_overview_metrics(db)
+        empty = analytics_service.get_enquiry_metrics(db, organization_id=legacy_organization_id(db))
+        overview = analytics_service.get_overview_metrics(db, organization_id=legacy_organization_id(db))
     assert empty.by_status == []
     assert empty.total_estimated_value == Decimal("0")
     assert overview.total_customers == 0
@@ -261,7 +263,7 @@ def test_read_only_agent_analytics_tool_returns_calculated_metrics(
     agent_sessions: sessionmaker[Session],
 ) -> None:
     with agent_sessions() as db:
-        tools = {tool.name: tool for tool in build_read_only_tools(db)}
+        tools = {tool.name: tool for tool in build_read_only_tools(db, AgentToolContext(organization_id=legacy_organization_id(db)))}
         output = json.loads(tools["get_sales_analytics"].invoke({}))
 
     assert output["overview"]["total_customers"] == 0

@@ -78,6 +78,7 @@ def build_action_proposal_tools(
         history = db.scalars(
             select(model)
             .where(
+                model.organization_id == context.organization_id,
                 model.customer_id == customer_id,
                 starts_column == moment,
                 model.status.not_in(active),
@@ -252,6 +253,7 @@ def build_action_proposal_tools(
                     duration_minutes=proposal.duration
                     or default_duration("meeting"),
                     timezone_name=proposal.scheduled_timezone or "UTC",
+                    organization_id=context.organization_id,
                 ),
             )
             conflict_message = _availability_message(
@@ -331,6 +333,7 @@ def build_action_proposal_tools(
                     duration_minutes=data.duration
                     or default_duration("followup"),
                     timezone_name=data.due_timezone or "UTC",
+                    organization_id=context.organization_id,
                 ),
             )
             conflict_message = _availability_message(
@@ -440,6 +443,7 @@ def build_action_proposal_tools(
                 starts_at=data.scheduled_at,
                 duration_minutes=data.duration or default_duration("call"),
                 timezone_name=data.scheduled_timezone or "UTC",
+                organization_id=context.organization_id,
             ),
         )
         conflict_message = _availability_message(

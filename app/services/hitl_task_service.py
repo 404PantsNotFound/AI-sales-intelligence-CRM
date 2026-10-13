@@ -9,6 +9,7 @@ from app.models import (
     HitlActionProposal,
     HitlExecutionAudit,
     HitlTask,
+    User,
 )
 from app.schemas.agent import (
     AgentActionName,
@@ -71,11 +72,14 @@ def _decode_operations(
 def _validate_targets(
     db: Session,
     payloads: list[tuple[AgentActionName, dict[str, Any]]],
+    *,
+    organization_id: int,
 ) -> None:
     for _, payload in payloads:
         validate_customer_references(
             db,
             payload["customer_id"],
+            organization_id=organization_id,
             contact_id=payload.get("contact_id"),
             enquiry_id=payload.get("enquiry_id"),
             meeting_id=payload.get("meeting_id"),
@@ -88,6 +92,8 @@ def _require_scheduling_availability(
     db: Session,
     action: AgentActionName,
     payload: dict[str, Any],
+    *,
+    organization_id: int,
 ) -> None:
     request: ScheduleRequest | None = None
     if action == "create_meeting":
@@ -98,6 +104,7 @@ def _require_scheduling_availability(
                 starts_at=proposal.scheduled_at,
                 duration_minutes=proposal.duration or default_duration("meeting"),
                 timezone_name=proposal.scheduled_timezone or "UTC",
+                organization_id=organization_id,
             )
     elif action == "schedule_call":
         proposal = ScheduleCallProposal.model_validate(payload)
@@ -106,6 +113,7 @@ def _require_scheduling_availability(
             starts_at=proposal.scheduled_at,
             duration_minutes=proposal.duration or default_duration("call"),
             timezone_name=proposal.scheduled_timezone,
+            organization_id=organization_id,
         )
     elif action == "create_followup":
         proposal = CreateFollowupProposal.model_validate(payload)
@@ -115,6 +123,7 @@ def _require_scheduling_availability(
                 starts_at=proposal.due_date,
                 duration_minutes=proposal.duration or default_duration("followup"),
                 timezone_name=proposal.due_timezone or "UTC",
+                organization_id=organization_id,
             )
     if request is None:
         return
@@ -145,6 +154,8 @@ def _require_scheduling_availability(
 def _validate_partial_targets(
     db: Session,
     values: dict[str, Any],
+    *,
+    organization_id: int,
 ) -> None:
     customer_id = values.get("customer_id")
     reference_fields = (
@@ -167,6 +178,7 @@ def _validate_partial_targets(
     validate_customer_references(
         db,
         customer_id,
+        organization_id=organization_id,
         contact_id=values.get("contact_id"),
         enquiry_id=values.get("enquiry_id"),
         meeting_id=values.get("meeting_id"),
@@ -178,11 +190,13 @@ def _validate_partial_targets(
 def _run_automatic_actions(
     db: Session,
     records: list[PendingActionRecord],
+    *,
+    organization_id: int,
 ) -> None:
     for record in records:
         if record.action in {"create_meeting", "schedule_call"}:
             continue
-        if get_action_policy(db, record.action) != "automatic":
+        if get_action_policy(db, record.action, organization_id=organization_id) != "automatic":
             continue
         claimed = pending_actions.claim_automatic(
             db,
@@ -198,6 +212,7 @@ def _finalize_if_complete(
     operations: list[dict[str, Any]],
     *,
     user_id: int,
+    organization_id: int,
 ) -> HitlTask:
     payloads: list[tuple[AgentActionName, dict[str, Any]]] = []
     for item in operations:
@@ -206,8 +221,8 @@ def _finalize_if_complete(
         payload, missing = validate_operation(action, values)
         if missing or payload is None:
             return task
-        _require_scheduling_availability(db, action, payload)
-        mode = get_action_policy(db, action)
+        _require_scheduling_availability(db, action, payload, organization_id=organization_id)
+        mode = get_action_policy(db, action, organization_id=organization_id)
         if mode == "disabled":
             raise APIError(
                 f"{action} is disabled and cannot be proposed.",
@@ -215,7 +230,7 @@ def _finalize_if_complete(
                 "action_disabled",
             )
         payloads.append((action, payload))
-    _validate_targets(db, payloads)
+    _validate_targets(db, payloads, organization_id=organization_id)
 
     pending_actions.mark_ready_for_review(db, task.task_id, commit=False)
     task_data = {"operations": operations}
@@ -226,7 +241,7 @@ def _finalize_if_complete(
         user_id=user_id,
         task_data=task_data,
     )
-    _run_automatic_actions(db, records)
+    _run_automatic_actions(db, records, organization_id=organization_id)
     db.expire_all()
     result = db.get(HitlTask, task.task_id)
     if result is None:
@@ -266,6 +281,9 @@ def _operation_status(
 
 
 def _response(db: Session, task: HitlTask) -> AgentTaskResponse:
+    owner = db.get(User, task.owner_user_id)
+    if owner is None:
+        raise APIError("Task not found.", 404, "task_not_found")
     proposals = list(
         db.scalars(
             select(HitlActionProposal).where(
@@ -310,7 +328,7 @@ def _response(db: Session, task: HitlTask) -> AgentTaskResponse:
                 values=payload if payload is not None else values,
                 missing_fields=missing,
                 fields=(
-                    form_fields(db, action, values)
+                    form_fields(db, action, values, organization_id=owner.organization_id)
                     if not action_id
                     and task.status == "collecting_information"
                     else []
@@ -349,10 +367,11 @@ def create_task(
     request: AgentTaskStartRequest,
     *,
     user_id: int,
+    organization_id: int,
 ) -> AgentTaskResponse:
     operations: list[dict[str, Any]] = []
     for operation in request.operations:
-        if get_action_policy(db, operation.action) == "disabled":
+        if get_action_policy(db, operation.action, organization_id=organization_id) == "disabled":
             raise APIError(
                 f"{operation.action} is disabled and cannot be proposed.",
                 403,
@@ -360,8 +379,10 @@ def create_task(
             )
         payload, missing = validate_operation(operation.action, operation.values)
         if payload is not None:
-            _require_scheduling_availability(db, operation.action, payload)
-        _validate_partial_targets(db, operation.values)
+            _require_scheduling_availability(
+                db, operation.action, payload, organization_id=organization_id
+            )
+        _validate_partial_targets(db, operation.values, organization_id=organization_id)
         operations.append(
             {
                 "action": operation.action,
@@ -376,7 +397,9 @@ def create_task(
         collected_data={"operations": operations},
     )
     if all(not item["status"] == "collecting_information" for item in operations):
-        task = _finalize_if_complete(db, task, operations, user_id=user_id)
+        task = _finalize_if_complete(
+            db, task, operations, user_id=user_id, organization_id=organization_id
+        )
     return _response(db, task)
 
 
@@ -386,6 +409,7 @@ def submit_task_input(
     request: AgentTaskInputRequest,
     *,
     user_id: int,
+    organization_id: int,
 ) -> AgentTaskResponse:
     task = pending_actions.get_task(db, task_id, user_id=user_id)
     # get_task marks an overdue task expired, so report expiry before the status check.
@@ -409,7 +433,7 @@ def submit_task_input(
         raise APIError("Persisted task values are invalid.", 500, "invalid_task_data")
     merged_values = {**current_values, **request.values}
     payload, missing = validate_operation(action, merged_values)
-    _validate_partial_targets(db, merged_values)
+    _validate_partial_targets(db, merged_values, organization_id=organization_id)
     item["values"] = merged_values
     item["status"] = "collecting_information" if missing else "ready_for_review"
     task = pending_actions.update_task_inputs(
@@ -423,7 +447,9 @@ def submit_task_input(
         for operation in operations
     ):
         try:
-            task = _finalize_if_complete(db, task, operations, user_id=user_id)
+            task = _finalize_if_complete(
+                db, task, operations, user_id=user_id, organization_id=organization_id
+            )
         except APIError as exc:
             if exc.code in {"schedule_conflict", "schedule_in_past"}:
                 db.rollback()
@@ -442,6 +468,7 @@ def resume_task(
     task_id: str,
     *,
     user_id: int,
+    organization_id: int,
 ) -> AgentTaskResponse:
     task = pending_actions.get_task(db, task_id, user_id=user_id)
     proposals = list(
@@ -457,11 +484,11 @@ def resume_task(
             values = item.get("values")
             if action not in ACTION_REGISTRY or not isinstance(values, dict):
                 raise APIError("Persisted task operations are invalid.", 500, "invalid_task_data")
-            mode = get_action_policy(db, action)
+            mode = get_action_policy(db, action, organization_id=organization_id)
             action_id = item.get("action_id")
             if not isinstance(action_id, str):
                 _, missing = validate_operation(action, values)
-                _validate_partial_targets(db, values)
+                _validate_partial_targets(db, values, organization_id=organization_id)
                 if not missing:
                     continue
                 if mode == "disabled":
@@ -496,7 +523,9 @@ def resume_task(
                     500,
                     "invalid_task_data",
                 ) from exc
-            _validate_targets(db, [(proposal.action_type, payload)])
+            _validate_targets(
+                db, [(proposal.action_type, payload)], organization_id=organization_id
+            )
             if mode == "disabled" and proposal.status == "pending":
                 raise APIError(
                     "An action in this task is currently disabled.",
@@ -510,6 +539,7 @@ def list_tasks(
     db: Session,
     *,
     user_id: int,
+    organization_id: int,
     limit: int = 100,
 ) -> list[AgentTaskResponse]:
     tasks = list(
@@ -520,7 +550,10 @@ def list_tasks(
             .limit(max(1, min(limit, 100)))
         ).all()
     )
-    return [resume_task(db, task.task_id, user_id=user_id) for task in tasks]
+    return [
+        resume_task(db, task.task_id, user_id=user_id, organization_id=organization_id)
+        for task in tasks
+    ]
 
 
 def cancel_task(

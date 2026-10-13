@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends, File, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import APIError
+from app.core.security import get_current_user
 from app.database.connection import get_db
+from app.models import User
 from app.services.import_service import import_crm_workbook
 
 router = APIRouter(prefix="/import", tags=["import"])
@@ -12,6 +14,7 @@ router = APIRouter(prefix="/import", tags=["import"])
 def import_workbook(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     if not file.filename or not file.filename.lower().endswith(".xlsx"):
         raise APIError(
@@ -29,7 +32,7 @@ def import_workbook(
             code="empty_file",
         )
 
-    result = import_crm_workbook(db, file_bytes)
+    result = import_crm_workbook(db, file_bytes, organization_id=current_user.organization_id)
 
     return {
         "message": "CRM workbook imported successfully.",

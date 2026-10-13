@@ -4,7 +4,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.core.security import get_current_user
 from app.database.connection import get_db
+from app.models import User
 from app.schemas.analytics import (
     ActivityMetrics,
     AnalyticsDateRange,
@@ -40,9 +42,10 @@ DateRangeDependency = Annotated[AnalyticsDateRange, Depends(_date_range)]
 def get_overview(
     date_range: DateRangeDependency,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> OverviewMetrics:
     return analytics_service.get_overview_metrics(
-        db, date_range.start_date, date_range.end_date
+        db, date_range.start_date, date_range.end_date, organization_id=current_user.organization_id
     )
 
 
@@ -51,9 +54,14 @@ def get_customers(
     date_range: DateRangeDependency,
     db: Session = Depends(get_db),
     grain: TimeGrain = Query(default="monthly"),
+    current_user: User = Depends(get_current_user),
 ) -> CustomerMetrics:
     return analytics_service.get_customer_metrics(
-        db, date_range.start_date, date_range.end_date, grain
+        db,
+        date_range.start_date,
+        date_range.end_date,
+        grain,
+        organization_id=current_user.organization_id,
     )
 
 
@@ -62,9 +70,14 @@ def get_enquiries(
     date_range: DateRangeDependency,
     db: Session = Depends(get_db),
     grain: TimeGrain = Query(default="monthly"),
+    current_user: User = Depends(get_current_user),
 ) -> EnquiryMetrics:
     return analytics_service.get_enquiry_metrics(
-        db, date_range.start_date, date_range.end_date, grain
+        db,
+        date_range.start_date,
+        date_range.end_date,
+        grain,
+        organization_id=current_user.organization_id,
     )
 
 
@@ -73,9 +86,14 @@ def get_activities(
     date_range: DateRangeDependency,
     db: Session = Depends(get_db),
     grain: TimeGrain = Query(default="monthly"),
+    current_user: User = Depends(get_current_user),
 ) -> ActivityMetrics:
     return analytics_service.get_activity_metrics(
-        db, date_range.start_date, date_range.end_date, grain
+        db,
+        date_range.start_date,
+        date_range.end_date,
+        grain,
+        organization_id=current_user.organization_id,
     )
 
 
@@ -83,9 +101,10 @@ def get_activities(
 def get_pipeline(
     date_range: DateRangeDependency,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> PipelineMetrics:
     return analytics_service.get_pipeline_metrics(
-        db, date_range.start_date, date_range.end_date
+        db, date_range.start_date, date_range.end_date, organization_id=current_user.organization_id
     )
 
 
@@ -93,9 +112,10 @@ def get_pipeline(
 def get_followups(
     date_range: DateRangeDependency,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> FollowupMetrics:
     return analytics_service.get_followup_metrics(
-        db, date_range.start_date, date_range.end_date
+        db, date_range.start_date, date_range.end_date, organization_id=current_user.organization_id
     )
 
 
@@ -107,10 +127,12 @@ def get_attention_queue(
     new_enquiry_grace_days: int = Query(
         default=intelligence_service.DEFAULT_NEW_ENQUIRY_GRACE_DAYS, ge=0, le=30
     ),
+    current_user: User = Depends(get_current_user),
 ) -> AttentionQueue:
     return intelligence_service.get_attention_queue(
         db,
         now=datetime.now(timezone.utc),
+        organization_id=current_user.organization_id,
         stale_days=stale_days,
         limit=limit,
         new_enquiry_grace_days=new_enquiry_grace_days,

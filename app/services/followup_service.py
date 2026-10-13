@@ -11,7 +11,7 @@ from app.core.logging_utils import log_database_exception
 from app.database.connection import atomic_transaction, rollback_failed_transaction
 from app.models import FollowUp
 from app.schemas.follow_up import FollowUpCreate, FollowUpUpdate
-from app.services.activity_validation import validate_customer_references
+from app.services.activity_validation import owned, validate_customer_references
 from app.schemas.validators import normalize_utc_datetime, timezone_name_from_datetime
 from app.services.scheduling_service import (
     ScheduleRequest,
@@ -27,14 +27,16 @@ def create_followup(
     db: Session,
     data: FollowUpCreate,
     *,
+    organization_id: int,
     defer_commit: bool = False,
 ) -> FollowUp:
     try:
         with atomic_transaction(db, commit_existing=not defer_commit):
-            lock_workspace_schedule(db)
+            lock_workspace_schedule(db, organization_id)
             validate_customer_references(
                 db,
                 data.customer_id,
+                organization_id=organization_id,
                 enquiry_id=data.enquiry_id,
                 meeting_id=data.meeting_id,
                 call_id=data.call_id,
@@ -47,6 +49,7 @@ def create_followup(
                     starts_at=data.due_date,
                     duration_minutes=duration,
                     timezone_name=data.due_timezone or "UTC",
+                    organization_id=organization_id,
                 )
                 # "overdue" is past-due by definition, so only new open work must be future.
                 if data.status in {"pending", "in_progress"}:
@@ -54,7 +57,7 @@ def create_followup(
                 require_available(db, schedule)
             values = data.model_dump()
             values["duration"] = duration
-            followup = FollowUp(**values)
+            followup = FollowUp(**values, organization_id=organization_id)
             db.add(followup)
             db.flush()
             db.refresh(followup)
@@ -71,7 +74,7 @@ def create_followup(
         raise APIError("The database operation could not be completed.", 500, "database_error") from exc
 
 
-def get_followup(db: Session, followup_id: int) -> FollowUp:
+def get_followup(db: Session, followup_id: int, *, organization_id: int) -> FollowUp:
     try:
         followup = db.scalar(
             select(FollowUp)
@@ -80,7 +83,10 @@ def get_followup(db: Session, followup_id: int) -> FollowUp:
                 joinedload(FollowUp.meeting),
                 joinedload(FollowUp.call),
             )
-            .where(FollowUp.followup_id == followup_id)
+            .where(
+                FollowUp.followup_id == followup_id,
+                FollowUp.organization_id == organization_id,
+            )
         )
     except SQLAlchemyError as exc:
         rollback_failed_transaction(db)
@@ -91,11 +97,13 @@ def get_followup(db: Session, followup_id: int) -> FollowUp:
     return followup
 
 
-def update_followup(db: Session, followup_id: int, data: FollowUpUpdate) -> FollowUp:
+def update_followup(
+    db: Session, followup_id: int, data: FollowUpUpdate, *, organization_id: int
+) -> FollowUp:
     try:
         with atomic_transaction(db):
-            lock_workspace_schedule(db)
-            followup = db.get(FollowUp, followup_id)
+            lock_workspace_schedule(db, organization_id)
+            followup = owned(db, FollowUp, followup_id, organization_id=organization_id)
             if followup is None:
                 raise APIError("Follow-up not found.", 404, "followup_not_found")
             updates = data.model_dump(exclude_unset=True)
@@ -126,6 +134,7 @@ def update_followup(db: Session, followup_id: int, data: FollowUpUpdate) -> Foll
                     timezone_name=updates.get(
                         "due_timezone", followup.due_timezone or "UTC"
                     ),
+                    organization_id=organization_id,
                     exclude_id=followup.followup_id,
                 )
                 # Untouched past follow-ups stay editable; new or reopened due times must be future.
@@ -139,6 +148,7 @@ def update_followup(db: Session, followup_id: int, data: FollowUpUpdate) -> Foll
             validate_customer_references(
                 db,
                 customer_id,
+                organization_id=organization_id,
                 enquiry_id=updates.get("enquiry_id", followup.enquiry_id),
                 meeting_id=updates.get("meeting_id", followup.meeting_id),
                 call_id=updates.get("call_id", followup.call_id),
@@ -165,16 +175,18 @@ def complete_customer_followup(
     customer_id: int,
     followup_id: int,
     *,
+    organization_id: int,
     defer_commit: bool = False,
 ) -> FollowUp:
     try:
         with atomic_transaction(db, commit_existing=not defer_commit):
-            lock_workspace_schedule(db)
+            lock_workspace_schedule(db, organization_id)
             followup = db.scalar(
                 select(FollowUp)
                 .where(
                     FollowUp.followup_id == followup_id,
                     FollowUp.customer_id == customer_id,
+                    FollowUp.organization_id == organization_id,
                 )
             )
             if followup is None:
@@ -192,6 +204,7 @@ def complete_customer_followup(
             validate_customer_references(
                 db,
                 customer_id,
+                organization_id=organization_id,
                 enquiry_id=followup.enquiry_id,
                 meeting_id=followup.meeting_id,
                 call_id=followup.call_id,
@@ -213,9 +226,11 @@ def complete_customer_followup(
         ) from exc
 
 
-def list_customer_followups(db: Session, customer_id: int) -> list[FollowUp]:
+def list_customer_followups(
+    db: Session, customer_id: int, *, organization_id: int
+) -> list[FollowUp]:
     try:
-        validate_customer_references(db, customer_id)
+        validate_customer_references(db, customer_id, organization_id=organization_id)
         return list(
             db.scalars(
                 select(FollowUp)
@@ -224,7 +239,9 @@ def list_customer_followups(db: Session, customer_id: int) -> list[FollowUp]:
                     joinedload(FollowUp.meeting),
                     joinedload(FollowUp.call),
                 )
-                .where(FollowUp.customer_id == customer_id)
+                .where(
+                    FollowUp.customer_id == customer_id, FollowUp.organization_id == organization_id
+                )
                 .order_by(FollowUp.due_date.desc(), FollowUp.followup_id.desc())
             ).all()
         )

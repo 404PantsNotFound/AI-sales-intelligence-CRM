@@ -32,11 +32,18 @@ def _is_policy_mode(value: str) -> TypeGuard[AgentActionMode]:
     return value in VALID_MODES
 
 
+# Overrides belong to one organization; DEFAULT_POLICIES apply wherever none is set.
 class ActionPolicyStore:
-    def list_policies(self, db: Session) -> dict[AgentActionName, AgentActionMode]:
+    def list_policies(
+        self, db: Session, *, organization_id: int
+    ) -> dict[AgentActionName, AgentActionMode]:
         policies = dict(DEFAULT_POLICIES)
         try:
-            overrides = db.scalars(select(HitlPolicyOverride)).all()
+            overrides = db.scalars(
+                select(HitlPolicyOverride).where(
+                    HitlPolicyOverride.organization_id == organization_id
+                )
+            ).all()
         except SQLAlchemyError as exc:
             rollback_failed_transaction(db)
             raise APIError(
@@ -61,11 +68,13 @@ class ActionPolicyStore:
         db: Session,
         action: AgentActionName,
         *,
+        organization_id: int,
         for_update: bool = False,
     ) -> AgentActionMode:
         try:
             statement = select(HitlPolicyOverride).where(
-                HitlPolicyOverride.action_type == action
+                HitlPolicyOverride.organization_id == organization_id,
+                HitlPolicyOverride.action_type == action,
             )
             if for_update:
                 statement = statement.with_for_update()
@@ -93,6 +102,7 @@ class ActionPolicyStore:
         action: AgentActionName,
         mode: AgentActionMode,
         *,
+        organization_id: int,
         changed_by: str,
     ) -> tuple[AgentActionMode, AgentActionMode, datetime]:
         if action not in DEFAULT_POLICIES:
@@ -109,7 +119,12 @@ class ActionPolicyStore:
             )
 
         try:
-            actor_id = db.scalar(select(User.user_id).where(User.email == changed_by))
+            actor_id = db.scalar(
+                select(User.user_id).where(
+                    User.email == changed_by,
+                    User.organization_id == organization_id,
+                )
+            )
             if actor_id is None:
                 raise APIError(
                     "The policy administrator could not be identified.",
@@ -119,7 +134,10 @@ class ActionPolicyStore:
 
             override = db.scalar(
                 select(HitlPolicyOverride)
-                .where(HitlPolicyOverride.action_type == action)
+                .where(
+                    HitlPolicyOverride.organization_id == organization_id,
+                    HitlPolicyOverride.action_type == action,
+                )
                 .with_for_update()
             )
             previous = (
@@ -137,6 +155,7 @@ class ActionPolicyStore:
             if previous != mode:
                 if override is None:
                     override = HitlPolicyOverride(
+                        organization_id=organization_id,
                         action_type=action,
                         mode=mode,
                         updated_by_user_id=actor_id,
@@ -150,6 +169,7 @@ class ActionPolicyStore:
 
                 db.add(
                     HitlPolicyAudit(
+                        organization_id=organization_id,
                         action_type=action,
                         previous_mode=previous,
                         new_mode=mode,
@@ -170,8 +190,10 @@ class ActionPolicyStore:
                 "hitl_persistence_error",
             ) from exc
 
-    def enforce_action_policy(self, db: Session, action: AgentActionName) -> None:
-        mode = self.get_policy(db, action)
+    def enforce_action_policy(
+        self, db: Session, action: AgentActionName, *, organization_id: int
+    ) -> None:
+        mode = self.get_policy(db, action, organization_id=organization_id)
         if mode == "disabled":
             raise APIError(
                 "This action is disabled by the global autonomy policy and cannot execute.",
@@ -183,17 +205,22 @@ class ActionPolicyStore:
 policy_store = ActionPolicyStore()
 
 
-def list_action_policies(db: Session) -> dict[AgentActionName, AgentActionMode]:
-    return policy_store.list_policies(db)
+def list_action_policies(
+    db: Session, *, organization_id: int
+) -> dict[AgentActionName, AgentActionMode]:
+    return policy_store.list_policies(db, organization_id=organization_id)
 
 
 def get_action_policy(
     db: Session,
     action: AgentActionName,
     *,
+    organization_id: int,
     for_update: bool = False,
 ) -> AgentActionMode:
-    return policy_store.get_policy(db, action, for_update=for_update)
+    return policy_store.get_policy(
+        db, action, organization_id=organization_id, for_update=for_update
+    )
 
 
 def set_action_policy(
@@ -201,12 +228,14 @@ def set_action_policy(
     action: AgentActionName,
     mode: AgentActionMode,
     *,
+    organization_id: int,
     changed_by: str,
 ) -> dict[str, Any]:
     previous, new_mode, changed_at = policy_store.set_policy(
         db,
         action,
         mode,
+        organization_id=organization_id,
         changed_by=changed_by,
     )
     return {
@@ -218,5 +247,7 @@ def set_action_policy(
     }
 
 
-def enforce_action_policy(db: Session, action: AgentActionName) -> None:
-    policy_store.enforce_action_policy(db, action)
+def enforce_action_policy(
+    db: Session, action: AgentActionName, *, organization_id: int
+) -> None:
+    policy_store.enforce_action_policy(db, action, organization_id=organization_id)

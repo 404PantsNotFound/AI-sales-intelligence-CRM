@@ -6,6 +6,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -54,10 +55,22 @@ class User(Base):
 class Company(Base):
     __tablename__ = "companies"
     __table_args__ = (
-        UniqueConstraint("company_name", name="uq_companies_company_name"),
+        # Referenced by customers' composite foreign key.
+        UniqueConstraint("organization_id", "company_id", name="uq_companies_organization_company"),
+        UniqueConstraint(
+            "organization_id", "company_name", name="uq_companies_organization_company_name"
+        ),
     )
 
     company_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "organizations.organization_id",
+            ondelete="RESTRICT",
+            name="fk_companies_organization_id_organizations",
+        ),
+        nullable=False,
+    )
     company_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     industry: Mapped[str | None] = mapped_column(String(150))
     website: Mapped[str | None] = mapped_column(String(255))
@@ -73,10 +86,14 @@ class Company(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    customers: Mapped[list["Customer"]] = relationship(back_populates="company")
+    customers: Mapped[list["Customer"]] = relationship(
+        back_populates="company", foreign_keys="Customer.company_id"
+    )
 
 
 class SchedulingLock(Base):
+    """One row per organization; lock_id equals the organization_id it serializes."""
+
     __tablename__ = "scheduling_locks"
 
     lock_id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -91,10 +108,20 @@ class Customer(Base):
             "customer_name",
             name="uq_customers_company_customer_name",
         ),
+        UniqueConstraint(
+            "organization_id", "customer_id", name="uq_customers_organization_customer"
+        ),
+        Index("ix_customers_organization_company", "organization_id", "company_id"),
+        ForeignKeyConstraint(
+            ["organization_id", "company_id"],
+            ["companies.organization_id", "companies.company_id"],
+            ondelete="RESTRICT",
+            name="fk_customers_company_organization",
+        ),
     )
 
-
     customer_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(Integer, nullable=False)
     company_id: Mapped[int] = mapped_column(
         ForeignKey("companies.company_id", ondelete="RESTRICT"), nullable=False, index=True
     )
@@ -108,19 +135,39 @@ class Customer(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    company: Mapped[Company] = relationship(back_populates="customers")
-    contacts: Mapped[list["Contact"]] = relationship(back_populates="customer")
-    sales_enquiries: Mapped[list["SalesEnquiry"]] = relationship(back_populates="customer")
-    meetings: Mapped[list["Meeting"]] = relationship(back_populates="customer")
-    calls: Mapped[list["Call"]] = relationship(back_populates="customer")
-    followups: Mapped[list["FollowUp"]] = relationship(back_populates="customer")
+    company: Mapped[Company] = relationship(back_populates="customers", foreign_keys=[company_id])
+    contacts: Mapped[list["Contact"]] = relationship(
+        back_populates="customer", foreign_keys="Contact.customer_id"
+    )
+    sales_enquiries: Mapped[list["SalesEnquiry"]] = relationship(
+        back_populates="customer", foreign_keys="SalesEnquiry.customer_id"
+    )
+    meetings: Mapped[list["Meeting"]] = relationship(
+        back_populates="customer", foreign_keys="Meeting.customer_id"
+    )
+    calls: Mapped[list["Call"]] = relationship(
+        back_populates="customer", foreign_keys="Call.customer_id"
+    )
+    followups: Mapped[list["FollowUp"]] = relationship(
+        back_populates="customer", foreign_keys="FollowUp.customer_id"
+    )
 
 
 class Contact(Base):
     __tablename__ = "contacts"
-    __table_args__ = (Index("ix_contacts_customer_id_name", "customer_id", "name"),)
+    __table_args__ = (
+        Index("ix_contacts_customer_id_name", "customer_id", "name"),
+        Index("ix_contacts_organization_customer", "organization_id", "customer_id"),
+        ForeignKeyConstraint(
+            ["organization_id", "customer_id"],
+            ["customers.organization_id", "customers.customer_id"],
+            ondelete="RESTRICT",
+            name="fk_contacts_customer_organization",
+        ),
+    )
 
     contact_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(Integer, nullable=False)
     customer_id: Mapped[int] = mapped_column(
         ForeignKey("customers.customer_id", ondelete="RESTRICT"), nullable=False, index=True
     )
@@ -136,7 +183,7 @@ class Contact(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    customer: Mapped[Customer] = relationship(back_populates="contacts")
+    customer: Mapped[Customer] = relationship(back_populates="contacts", foreign_keys=[customer_id])
     meetings: Mapped[list["Meeting"]] = relationship(back_populates="contact")
     calls: Mapped[list["Call"]] = relationship(back_populates="contact")
 
@@ -153,9 +200,17 @@ class SalesEnquiry(Base):
             "status IN ('open', 'in_progress', 'converted', 'closed', 'lost')",
             name="ck_sales_enquiries_status",
         ),
+        Index("ix_sales_enquiries_organization_customer", "organization_id", "customer_id"),
+        ForeignKeyConstraint(
+            ["organization_id", "customer_id"],
+            ["customers.organization_id", "customers.customer_id"],
+            ondelete="RESTRICT",
+            name="fk_sales_enquiries_customer_organization",
+        ),
     )
 
     enquiry_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(Integer, nullable=False)
     customer_id: Mapped[int] = mapped_column(
         ForeignKey("customers.customer_id", ondelete="RESTRICT"), nullable=False, index=True
     )
@@ -171,7 +226,9 @@ class SalesEnquiry(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    customer: Mapped[Customer] = relationship(back_populates="sales_enquiries")
+    customer: Mapped[Customer] = relationship(
+        back_populates="sales_enquiries", foreign_keys=[customer_id]
+    )
     meetings: Mapped[list["Meeting"]] = relationship(back_populates="enquiry")
     calls: Mapped[list["Call"]] = relationship(back_populates="enquiry")
     followups: Mapped[list["FollowUp"]] = relationship(back_populates="enquiry")
@@ -179,9 +236,19 @@ class SalesEnquiry(Base):
 
 class Meeting(Base):
     __tablename__ = "meetings"
-    __table_args__ = (Index("ix_meetings_customer_scheduled_at", "customer_id", "scheduled_at"),)
+    __table_args__ = (
+        Index("ix_meetings_customer_scheduled_at", "customer_id", "scheduled_at"),
+        Index("ix_meetings_organization_customer", "organization_id", "customer_id"),
+        ForeignKeyConstraint(
+            ["organization_id", "customer_id"],
+            ["customers.organization_id", "customers.customer_id"],
+            ondelete="RESTRICT",
+            name="fk_meetings_customer_organization",
+        ),
+    )
 
     meeting_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(Integer, nullable=False)
     customer_id: Mapped[int] = mapped_column(
         ForeignKey("customers.customer_id", ondelete="RESTRICT"), nullable=False, index=True
     )
@@ -207,7 +274,9 @@ class Meeting(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    customer: Mapped[Customer] = relationship(back_populates="meetings")
+    customer: Mapped[Customer] = relationship(
+        back_populates="meetings", foreign_keys=[customer_id]
+    )
     contact: Mapped[Contact | None] = relationship(back_populates="meetings")
     enquiry: Mapped[SalesEnquiry | None] = relationship(back_populates="meetings")
     followups: Mapped[list["FollowUp"]] = relationship(back_populates="meeting")
@@ -221,9 +290,17 @@ class Call(Base):
             "status IN ('scheduled', 'attempted', 'completed', 'failed', 'cancelled', 'missed')",
             name="ck_calls_status",
         ),
+        Index("ix_calls_organization_customer", "organization_id", "customer_id"),
+        ForeignKeyConstraint(
+            ["organization_id", "customer_id"],
+            ["customers.organization_id", "customers.customer_id"],
+            ondelete="RESTRICT",
+            name="fk_calls_customer_organization",
+        ),
     )
 
     call_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(Integer, nullable=False)
     customer_id: Mapped[int] = mapped_column(
         ForeignKey("customers.customer_id", ondelete="RESTRICT"), nullable=False, index=True
     )
@@ -252,7 +329,9 @@ class Call(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    customer: Mapped[Customer] = relationship(back_populates="calls")
+    customer: Mapped[Customer] = relationship(
+        back_populates="calls", foreign_keys=[customer_id]
+    )
     contact: Mapped[Contact | None] = relationship(back_populates="calls")
     enquiry: Mapped[SalesEnquiry | None] = relationship(back_populates="calls")
     followups: Mapped[list["FollowUp"]] = relationship(back_populates="call")
@@ -262,9 +341,17 @@ class FollowUp(Base):
     __tablename__ = "follow_ups"
     __table_args__ = (
         Index("ix_follow_ups_customer_due_date", "customer_id", "due_date"),
+        Index("ix_follow_ups_organization_customer", "organization_id", "customer_id"),
+        ForeignKeyConstraint(
+            ["organization_id", "customer_id"],
+            ["customers.organization_id", "customers.customer_id"],
+            ondelete="RESTRICT",
+            name="fk_follow_ups_customer_organization",
+        ),
     )
 
     followup_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(Integer, nullable=False)
     customer_id: Mapped[int] = mapped_column(
         ForeignKey("customers.customer_id", ondelete="RESTRICT"), nullable=False, index=True
     )
@@ -294,7 +381,9 @@ class FollowUp(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    customer: Mapped[Customer] = relationship(back_populates="followups")
+    customer: Mapped[Customer] = relationship(
+        back_populates="followups", foreign_keys=[customer_id]
+    )
     enquiry: Mapped[SalesEnquiry | None] = relationship(back_populates="followups")
     meeting: Mapped[Meeting | None] = relationship(back_populates="followups")
     call: Mapped[Call | None] = relationship(back_populates="followups")

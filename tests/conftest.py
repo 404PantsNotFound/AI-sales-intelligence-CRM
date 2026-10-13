@@ -142,7 +142,7 @@ def agent_client(
 def agent_records(agent_sessions: sessionmaker[Session]) -> dict[str, int]:
     now = datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc)
     with agent_sessions() as db:
-        company = Company(company_name="ABC Trading", industry="Retail")
+        company = Company(organization_id=legacy_organization_id(db), company_name="ABC Trading", industry="Retail")
         db.add(company)
         db.flush()
         customer = Customer(

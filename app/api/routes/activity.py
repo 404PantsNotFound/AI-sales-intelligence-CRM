@@ -3,7 +3,9 @@ from datetime import date
 from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.orm import Session
 
+from app.core.security import get_current_user
 from app.database.connection import get_db
+from app.models import User
 from app.schemas.activity import (
     ActivityResponse,
     ActivityTimelineResponse,
@@ -26,10 +28,12 @@ def get_customer_activity(
     activity_type: ActivityType | None = Query(default=None, alias="type"),
     start_date: date | None = None,
     end_date: date | None = None,
+    current_user: User = Depends(get_current_user),
 ) -> ActivityTimelineResponse:
     items: list[ActivityResponse] = activity_service.get_customer_activity(
         db,
         customer_id,
+        organization_id=current_user.organization_id,
         activity_type=activity_type,
         start_date=start_date,
         end_date=end_date,
@@ -45,6 +49,9 @@ def get_customer_activity(
 def get_customer_overview(
     customer_id: int = Path(ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> CustomerOverviewResponse:
-    return activity_service.get_customer_overview(db, customer_id)
+    return activity_service.get_customer_overview(
+        db, customer_id, organization_id=current_user.organization_id
+    )
 

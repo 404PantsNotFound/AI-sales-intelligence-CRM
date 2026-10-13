@@ -336,21 +336,22 @@ def test_policy_override_and_change_audit_persist(
     with agent_sessions() as db:
         user = _create_user(db, "hitl.policy-admin@example.com", role="admin")
         email = user.email
-        assert get_action_policy(db, action) == DEFAULT_POLICIES[action]
+        assert get_action_policy(db, action, organization_id=legacy_organization_id(db)) == DEFAULT_POLICIES[action]
 
     with agent_sessions() as db:
         result = set_action_policy(
             db,
             action,
             "disabled",
+            organization_id=legacy_organization_id(db),
             changed_by=email,
         )
         assert result["previous_mode"] == "approval_required"
         assert result["new_mode"] == "disabled"
 
     with agent_sessions() as db:
-        assert get_action_policy(db, action) == "disabled"
-        override = db.get(HitlPolicyOverride, action)
+        assert get_action_policy(db, action, organization_id=legacy_organization_id(db)) == "disabled"
+        override = db.get(HitlPolicyOverride, (legacy_organization_id(db), action))
         assert override is not None
         assert override.updated_by_user_id is not None
 
@@ -369,8 +370,8 @@ def test_policy_defaults_remain_safe_without_override(
     agent_sessions: sessionmaker[Session],
 ) -> None:
     with agent_sessions() as db:
-        assert get_action_policy(db, "apply_enrichment") == "approval_required"
-        assert db.get(HitlPolicyOverride, "apply_enrichment") is None
+        assert get_action_policy(db, "apply_enrichment", organization_id=legacy_organization_id(db)) == "approval_required"
+        assert db.get(HitlPolicyOverride, (legacy_organization_id(db), "apply_enrichment")) is None
 
 
 def test_rejection_decision_and_state_are_persisted(

@@ -268,10 +268,37 @@ def _validate_relationships(
                 )
 
 
+def _require_unique_ids(rows: list[dict[str, Any]], sheet_name: str, id_field: str) -> None:
+    # Workbook IDs only link rows within this file, so each must be present and unique.
+    seen: set[Any] = set()
+    for row_number, row in enumerate(rows, start=2):
+        record_id = row.get(id_field)
+        if record_id is None or record_id in seen:
+            raise APIError(
+                f"{sheet_name} row {row_number} has a missing or duplicate {id_field}.",
+                status_code=422,
+                code="invalid_import",
+            )
+        seen.add(record_id)
+
+
+def _linked(records: dict[Any, Any], row: dict[str, Any], field: str) -> Any:
+    workbook_id = _optional(row, field)
+    return None if workbook_id is None else records[workbook_id]
+
+
 def import_crm_workbook(
     db: Session,
     file_bytes: bytes,
+    *,
+    organization_id: int,
 ) -> dict[str, int]:
+    """Import into the caller's organization only.
+
+    Workbook IDs are never written: every record gets a new database ID and its
+    relationships are remapped, so a file cannot overwrite, collide with or link
+    to existing records of any organization.
+    """
     try:
         workbook = load_workbook(
             filename=BytesIO(file_bytes),
@@ -526,6 +553,17 @@ def import_crm_workbook(
     # Validate all relationships before inserting anything.
     # ---------------------------------------------------------
 
+    for rows, sheet, id_field in (
+        (companies, "Companies", "company_id"),
+        (customers, "Customers", "customer_id"),
+        (contacts, "Contacts", "contact_id"),
+        (enquiries, "Sales_Enquiries", "enquiry_id"),
+        (meetings, "Meetings", "meeting_id"),
+        (calls, "Calls", "call_id"),
+        (followups, "Follow_Ups", "followup_id"),
+    ):
+        _require_unique_ids(rows, sheet, id_field)
+
     company_ids = {row["company_id"] for row in companies}
     customer_ids = {row["customer_id"] for row in customers}
     contact_customer_ids = {
@@ -615,6 +653,7 @@ def import_crm_workbook(
                             scheduled_at,
                             duration,
                             timezone_name,
+                            organization_id=organization_id,
                             record_id=row["meeting_id"],
                         )
                     )
@@ -629,6 +668,7 @@ def import_crm_workbook(
                             scheduled_at,
                             duration,
                             timezone_name,
+                            organization_id=organization_id,
                             record_id=row["call_id"],
                         )
                     )
@@ -643,92 +683,96 @@ def import_crm_workbook(
                             due_date,
                             duration,
                             timezone_name,
+                            organization_id=organization_id,
                             record_id=row["followup_id"],
                         )
                     )
-            validate_schedule_batch(db, schedule_requests)
+            validate_schedule_batch(db, schedule_requests, organization_id=organization_id)
+
+            # Keyed by workbook ID; the values are the new, database-assigned records.
+            companies_by_id: dict[Any, Company] = {}
+            customers_by_id: dict[Any, Customer] = {}
+            contacts_by_id: dict[Any, Contact] = {}
+            enquiries_by_id: dict[Any, SalesEnquiry] = {}
+            meetings_by_id: dict[Any, Meeting] = {}
+            calls_by_id: dict[Any, Call] = {}
 
             for row in companies:
-                db.add(
-                    Company(
-                        company_id=row["company_id"],
-                        company_name=row["company_name"],
-                        industry=_optional(row, "industry"),
-                        website=_optional(row, "website"),
-                        address=_optional(row, "address"),
-                        city=_optional(row, "city"),
-                        country=_optional(row, "country"),
-                        company_size=_optional(row, "company_size"),
-                        description=_optional(row, "description"),
-                    )
+                companies_by_id[row["company_id"]] = company = Company(
+                    organization_id=organization_id,
+                    company_name=row["company_name"],
+                    industry=_optional(row, "industry"),
+                    website=_optional(row, "website"),
+                    address=_optional(row, "address"),
+                    city=_optional(row, "city"),
+                    country=_optional(row, "country"),
+                    company_size=_optional(row, "company_size"),
+                    description=_optional(row, "description"),
                 )
+                db.add(company)
 
             db.flush()
 
             for row in customers:
-                db.add(
-                    Customer(
-                        customer_id=row["customer_id"],
-                        company_id=row["company_id"],
-                        customer_name=row["customer_name"],
-                        status=row["status"],
-                        sales_stage=row["sales_stage"],
-                    )
+                customers_by_id[row["customer_id"]] = customer = Customer(
+                    organization_id=organization_id,
+                    company=companies_by_id[row["company_id"]],
+                    customer_name=row["customer_name"],
+                    status=row["status"],
+                    sales_stage=row["sales_stage"],
                 )
+                db.add(customer)
 
             db.flush()
 
             for row in contacts:
-                db.add(
-                    Contact(
-                        contact_id=row["contact_id"],
-                        customer_id=row["customer_id"],
-                        name=row["name"],
-                        job_title=_optional(row, "job_title"),
-                        email=_optional(row, "email"),
-                        phone=_optional(row, "phone"),
-                        is_primary=bool(row.get("is_primary", False)),
-                    )
+                contacts_by_id[row["contact_id"]] = contact = Contact(
+                    organization_id=organization_id,
+                    customer=customers_by_id[row["customer_id"]],
+                    name=row["name"],
+                    job_title=_optional(row, "job_title"),
+                    email=_optional(row, "email"),
+                    phone=_optional(row, "phone"),
+                    is_primary=bool(row.get("is_primary", False)),
                 )
+                db.add(contact)
 
             db.flush()
 
             for row in enquiries:
-                db.add(
-                    SalesEnquiry(
-                        enquiry_id=row["enquiry_id"],
-                        customer_id=row["customer_id"],
-                        product=_optional(row, "product"),
-                        enquiry_text=row["enquiry_text"],
-                        priority=row["priority"],
-                        status=row["status"],
-                        estimated_value=_decimal(
-                            row.get("estimated_value")
-                        ),
-                        created_at=_datetime(row["created_at"]),
-                    )
+                enquiries_by_id[row["enquiry_id"]] = enquiry = SalesEnquiry(
+                    organization_id=organization_id,
+                    customer=customers_by_id[row["customer_id"]],
+                    product=_optional(row, "product"),
+                    enquiry_text=row["enquiry_text"],
+                    priority=row["priority"],
+                    status=row["status"],
+                    estimated_value=_decimal(
+                        row.get("estimated_value")
+                    ),
+                    created_at=_datetime(row["created_at"]),
                 )
+                db.add(enquiry)
 
             db.flush()
 
             for row, (scheduled_at, scheduled_timezone, duration) in zip(
                 meetings, meeting_schedules
             ):
-                db.add(
-                    Meeting(
-                        meeting_id=row["meeting_id"],
-                        customer_id=row["customer_id"],
-                        contact_id=_optional(row, "contact_id"),
-                        enquiry_id=_optional(row, "enquiry_id"),
-                        scheduled_at=scheduled_at,
-                        scheduled_timezone=scheduled_timezone,
-                        duration=duration,
-                        status=row["status"],
-                        agenda=_optional(row, "agenda"),
-                        notes=_optional(row, "notes"),
-                        summary=_optional(row, "summary"),
-                    )
+                meetings_by_id[row["meeting_id"]] = meeting = Meeting(
+                    organization_id=organization_id,
+                    customer=customers_by_id[row["customer_id"]],
+                    contact=_linked(contacts_by_id, row, "contact_id"),
+                    enquiry=_linked(enquiries_by_id, row, "enquiry_id"),
+                    scheduled_at=scheduled_at,
+                    scheduled_timezone=scheduled_timezone,
+                    duration=duration,
+                    status=row["status"],
+                    agenda=_optional(row, "agenda"),
+                    notes=_optional(row, "notes"),
+                    summary=_optional(row, "summary"),
                 )
+                db.add(meeting)
 
             db.flush()
 
@@ -736,28 +780,27 @@ def import_crm_workbook(
                 scheduled_at, scheduled_timezone, duration = call_schedules[
                     row["call_id"]
                 ]
-                db.add(
-                    Call(
-                        call_id=row["call_id"],
-                        customer_id=row["customer_id"],
-                        contact_id=_optional(row, "contact_id"),
-                        enquiry_id=_optional(row, "enquiry_id"),
-                        call_type=_optional(row, "call_type"),
-                        scheduled_at=scheduled_at,
-                        scheduled_timezone=scheduled_timezone,
-                        duration=duration if scheduled_at is not None else _optional(row, "duration"),
-                        actual_time=_datetime(
-                            row.get("actual_time")
-                        ),
-                        status=row["status"],
-                        outcome=_optional(row, "outcome"),
-                        notes=_optional(row, "notes"),
-                        summary=_optional(row, "summary"),
-                        next_followup_date=_datetime(
-                            row.get("next_followup_date")
-                        ),
-                    )
+                calls_by_id[row["call_id"]] = call = Call(
+                    organization_id=organization_id,
+                    customer=customers_by_id[row["customer_id"]],
+                    contact=_linked(contacts_by_id, row, "contact_id"),
+                    enquiry=_linked(enquiries_by_id, row, "enquiry_id"),
+                    call_type=_optional(row, "call_type"),
+                    scheduled_at=scheduled_at,
+                    scheduled_timezone=scheduled_timezone,
+                    duration=duration if scheduled_at is not None else _optional(row, "duration"),
+                    actual_time=_datetime(
+                        row.get("actual_time")
+                    ),
+                    status=row["status"],
+                    outcome=_optional(row, "outcome"),
+                    notes=_optional(row, "notes"),
+                    summary=_optional(row, "summary"),
+                    next_followup_date=_datetime(
+                        row.get("next_followup_date")
+                    ),
                 )
+                db.add(call)
 
             db.flush()
 
@@ -767,11 +810,11 @@ def import_crm_workbook(
                 ]
                 db.add(
                     FollowUp(
-                        followup_id=row["followup_id"],
-                        customer_id=row["customer_id"],
-                        enquiry_id=_optional(row, "enquiry_id"),
-                        meeting_id=_optional(row, "meeting_id"),
-                        call_id=_optional(row, "call_id"),
+                        organization_id=organization_id,
+                        customer=customers_by_id[row["customer_id"]],
+                        enquiry=_linked(enquiries_by_id, row, "enquiry_id"),
+                        meeting=_linked(meetings_by_id, row, "meeting_id"),
+                        call=_linked(calls_by_id, row, "call_id"),
                         type=row["type"],
                         due_date=due_date,
                         due_timezone=due_timezone,

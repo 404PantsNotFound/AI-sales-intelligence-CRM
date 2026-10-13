@@ -27,7 +27,9 @@ def create_followup(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> FollowUpResponse:
-    response = FollowUpResponse.model_validate(followup_service.create_followup(db, data))
+    response = FollowUpResponse.model_validate(
+        followup_service.create_followup(db, data, organization_id=current_user.organization_id)
+    )
     calendar_sync_service.sync_activity(
         db, "followup", response.followup_id, created_by_user_id=current_user.user_id
     )
@@ -38,8 +40,11 @@ def create_followup(
 def get_followup(
     followup_id: int = Path(ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> FollowUpResponse:
-    return FollowUpResponse.model_validate(followup_service.get_followup(db, followup_id))
+    return FollowUpResponse.model_validate(
+        followup_service.get_followup(db, followup_id, organization_id=current_user.organization_id)
+    )
 
 
 @router.put(
@@ -51,9 +56,12 @@ def update_followup(
     data: FollowUpUpdate,
     followup_id: int = Path(ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> FollowUpResponse:
     response = FollowUpResponse.model_validate(
-        followup_service.update_followup(db, followup_id, data)
+        followup_service.update_followup(
+            db, followup_id, data, organization_id=current_user.organization_id
+        )
     )
     calendar_sync_service.sync_activity(db, "followup", followup_id)
     return response
@@ -67,9 +75,12 @@ def update_followup(
 def list_customer_followups(
     customer_id: int = Path(ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> list[FollowUpResponse]:
     return [
         FollowUpResponse.model_validate(item)
-        for item in followup_service.list_customer_followups(db, customer_id)
+        for item in followup_service.list_customer_followups(
+            db, customer_id, organization_id=current_user.organization_id
+        )
     ]
 

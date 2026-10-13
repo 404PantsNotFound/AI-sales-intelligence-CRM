@@ -34,7 +34,7 @@ from app.services.scheduling_service import (
     inspect_availability,
     require_available,
 )
-from tests.conftest import authorize_test_client
+from tests.conftest import authorize_test_client, legacy_organization_id
 
 
 @pytest.fixture
@@ -84,9 +84,9 @@ def activity_client(
 def activity_records(activity_sessions: sessionmaker[Session]) -> dict[str, int]:
     created_at = datetime(2030, 10, 1, 9, 0, tzinfo=timezone.utc)
     with activity_sessions() as db:
-        first_company = Company(company_name="First Company")
-        second_company = Company(company_name="Second Company")
-        empty_company = Company(company_name="Empty Company")
+        first_company = Company(organization_id=legacy_organization_id(db), company_name="First Company")
+        second_company = Company(organization_id=legacy_organization_id(db), company_name="Second Company")
+        empty_company = Company(organization_id=legacy_organization_id(db), company_name="Empty Company")
         db.add_all([first_company, second_company, empty_company])
         db.flush()
         first_customer = Customer(
@@ -500,11 +500,11 @@ def test_mysql_relationship_checks_use_ordered_current_reads() -> None:
     assert all("FOR UPDATE" in statement for statement in enquiry_sql)
 
     activity_db = Mock()
-    activity_db.get.return_value = object()
-    activity_db.scalar.side_effect = [object(), object()]
+    activity_db.scalar.side_effect = [object(), object(), object()]
     validate_customer_references(
         activity_db,
         1,
+        organization_id=1,
         contact_id=10,
         enquiry_id=20,
     )
@@ -512,9 +512,11 @@ def test_mysql_relationship_checks_use_ordered_current_reads() -> None:
         str(call.args[0].compile(dialect=mysql_dialect())).upper()
         for call in activity_db.scalar.call_args_list
     ]
-    assert "FROM CONTACTS" in activity_sql[0]
-    assert "FROM SALES_ENQUIRIES" in activity_sql[1]
-    assert all("FOR UPDATE" in statement for statement in activity_sql)
+    assert "FROM CUSTOMERS" in activity_sql[0]
+    assert "FROM CONTACTS" in activity_sql[1]
+    assert "FROM SALES_ENQUIRIES" in activity_sql[2]
+    assert all("ORGANIZATION_ID" in statement for statement in activity_sql)
+    assert all("FOR UPDATE" in statement for statement in activity_sql[1:])
 
 
 def test_followup_create_get_update_and_customer_list(
@@ -812,6 +814,7 @@ def test_scheduling_uses_cross_activity_overlaps_and_half_open_slots(
                 starts_at + timedelta(minutes=30),
                 30,
                 "UTC",
+                legacy_organization_id(db),
             ),
         )
         assert meeting_conflict["available"] is False
@@ -819,7 +822,9 @@ def test_scheduling_uses_cross_activity_overlaps_and_half_open_slots(
 
         adjacent = inspect_availability(
             db,
-            ScheduleRequest("call", starts_at - timedelta(minutes=30), 30, "UTC"),
+            ScheduleRequest(
+                "call", starts_at - timedelta(minutes=30), 30, "UTC", legacy_organization_id(db)
+            ),
         )
         assert adjacent["available"] is True
 
@@ -830,6 +835,7 @@ def test_scheduling_uses_cross_activity_overlaps_and_half_open_slots(
                 starts_at + timedelta(minutes=125),
                 15,
                 "UTC",
+                legacy_organization_id(db),
             ),
         )
         assert call_conflict["available"] is False
@@ -842,6 +848,7 @@ def test_scheduling_uses_cross_activity_overlaps_and_half_open_slots(
                 starts_at + timedelta(minutes=175),
                 30,
                 "UTC",
+                legacy_organization_id(db),
             ),
         )
         assert followup_conflict["available"] is False
@@ -854,6 +861,7 @@ def test_scheduling_uses_cross_activity_overlaps_and_half_open_slots(
                 starts_at + timedelta(minutes=245),
                 15,
                 "UTC",
+                legacy_organization_id(db),
             ),
         )
         assert inactive_only["available"] is True
@@ -880,7 +888,7 @@ def test_schedule_conflict_has_timezone_aware_suggestions(
         with pytest.raises(APIError) as exc_info:
             require_available(
                 db,
-                ScheduleRequest("meeting", starts_at, 60, "UTC"),
+                ScheduleRequest("meeting", starts_at, 60, "UTC", legacy_organization_id(db)),
             )
 
     assert exc_info.value.status_code == 409
@@ -955,7 +963,7 @@ def test_meeting_create_rechecks_conflict_without_persisting(
 
 def test_workspace_lock_query_compiles_with_mysql_for_update() -> None:
     compiled = str(
-        _workspace_schedule_lock_statement().compile(dialect=mysql_dialect())
+        _workspace_schedule_lock_statement(1).compile(dialect=mysql_dialect())
     )
     assert "scheduling_locks" in compiled
     assert "FOR UPDATE" in compiled

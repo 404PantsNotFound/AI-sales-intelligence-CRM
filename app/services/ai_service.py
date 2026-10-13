@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.agent.model import create_chat_model
 from app.agent.prompts import CUSTOMER_SUMMARY_SYSTEM_PROMPT, MEETING_BRIEF_SYSTEM_PROMPT
 from app.agent.structured import invoke_structured_output
-from app.agent.tools import build_read_only_tools
+from app.agent.tools import AgentToolContext, build_read_only_tools
 from app.core.exceptions import APIError
 from app.schemas.agent import (
     CustomerSummaryOutput,
@@ -294,8 +294,9 @@ def _build_activity_timeline_from_records(
     return [item[1] for item in timeline[:MAX_ACTIVITY]]
 
 
-def _customer_snapshot(db: Session, customer_id: int) -> dict[str, Any]:
-    tools = {tool.name: tool for tool in build_read_only_tools(db)}
+def _customer_snapshot(db: Session, customer_id: int, *, organization_id: int) -> dict[str, Any]:
+    context = AgentToolContext(organization_id=organization_id)
+    tools = {tool.name: tool for tool in build_read_only_tools(db, context)}
     profile = _call_crm_tool(tools, "get_customer_profile", {"customer_id": customer_id})
     enquiries = _tool_items({"items": profile.get("sales_enquiries", [])})
     all_meetings = _tool_items(
@@ -360,9 +361,10 @@ def generate_customer_summary(
     db: Session,
     customer_id: int,
     *,
+    organization_id: int,
     model: BaseChatModel | None = None,
 ) -> CustomerSummaryResponse:
-    snapshot = _customer_snapshot(db, customer_id)
+    snapshot = _customer_snapshot(db, customer_id, organization_id=organization_id)
     output = invoke_structured_output(
         model or create_chat_model(),
         CustomerSummaryOutput,
@@ -390,10 +392,11 @@ def generate_meeting_brief(
     db: Session,
     meeting_id: int,
     *,
+    organization_id: int,
     model: BaseChatModel | None = None,
 ) -> MeetingBriefResponse:
-    meeting = meeting_service.get_meeting(db, meeting_id)
-    snapshot = _customer_snapshot(db, meeting.customer_id)
+    meeting = meeting_service.get_meeting(db, meeting_id, organization_id=organization_id)
+    snapshot = _customer_snapshot(db, meeting.customer_id, organization_id=organization_id)
     contact: Any = "unavailable"
     enquiry: Any = "unavailable"
     if meeting.contact is not None:

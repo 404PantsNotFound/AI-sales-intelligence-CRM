@@ -14,7 +14,7 @@ from pydantic import SecretStr, ValidationError
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.agent.tools import build_read_only_tools
+from app.agent.tools import AgentToolContext, build_read_only_tools
 from app.agent.tools.action_schemas import CreateMeetingProposal
 from app.core.config import settings
 from app.core.exceptions import APIError
@@ -138,7 +138,7 @@ def test_default_agent_tools_are_read_only(
     agent_sessions: sessionmaker[Session],
 ) -> None:
     with agent_sessions() as db:
-        names = {tool.name for tool in build_read_only_tools(db)}
+        names = {tool.name for tool in build_read_only_tools(db, AgentToolContext(organization_id=legacy_organization_id(db)))}
     assert names.isdisjoint(
         {
             "create_meeting",
@@ -996,7 +996,9 @@ def _configure_action_policy(
         )
         db.add(admin)
         db.commit()
-        set_action_policy(db, action, mode, changed_by=admin.email)
+        set_action_policy(
+            db, action, mode, organization_id=admin.organization_id, changed_by=admin.email
+        )
 
 
 def test_automatic_policy_still_requires_explicit_meeting_approval(
@@ -1307,7 +1309,7 @@ def test_simultaneous_claims_only_start_one_execution(
                 organization_id=legacy_organization_id(db),
             )
             db.add(user)
-            company = Company(company_name="Concurrency Test Company")
+            company = Company(organization_id=legacy_organization_id(db), company_name="Concurrency Test Company")
             db.add(company)
             db.flush()
             customer = Customer(

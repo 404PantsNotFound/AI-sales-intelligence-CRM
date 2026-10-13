@@ -279,6 +279,8 @@ def form_fields(
     db: Session,
     action: AgentActionName,
     values: dict[str, Any],
+    *,
+    organization_id: int,
 ) -> list[AgentTaskFormField]:
     definition = ACTION_REGISTRY[action]
     customer_id = values.get("customer_id")
@@ -289,7 +291,9 @@ def form_fields(
             model, id_name, label_name = _SELECTORS[item.selector]
             id_column = getattr(model, id_name)
             label_column = getattr(model, label_name)
-            query = select(id_column, label_column)
+            query = select(id_column, label_column).where(
+                model.organization_id == organization_id
+            )
             if item.selector == "customer":
                 query = query.order_by(label_column)
             elif customer_id is not None:

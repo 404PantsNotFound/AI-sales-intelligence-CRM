@@ -30,6 +30,7 @@ def build_read_only_tools(
             "session_factory": session_factory,
         }
         analytics_kwargs = {
+            "context": context,
             "session_factory": session_factory,
         }
     else:
@@ -43,6 +44,7 @@ def build_read_only_tools(
         }
         analytics_kwargs = {
             "db": db,
+            "context": context,
         }
 
     tools = [
@@ -50,8 +52,7 @@ def build_read_only_tools(
         *build_activity_tools(**activity_kwargs),
         *build_analytics_tools(**analytics_kwargs),
     ]
-    if context is None:
-        return tools
+    assert context is not None  # The builders above refuse to run without one.
     return [_answer_once_per_request(tool, context) for tool in tools]
 
 

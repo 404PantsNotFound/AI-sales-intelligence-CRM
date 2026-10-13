@@ -240,6 +240,7 @@ def test_task_automatic_policy_executes_through_central_boundary(
             db,
             "create_meeting",
             "automatic",
+            organization_id=admin.organization_id,
             changed_by=admin.email,
         )
     with agent_sessions() as db:
@@ -582,7 +583,13 @@ def test_attention_suggestion_only_prepares_a_task_draft(
         db.add(admin)
         db.commit()
         # Even an automatic policy cannot execute a draft that still lacks user input.
-        set_action_policy(db, suggestion.kind, "automatic", changed_by=admin.email)
+        set_action_policy(
+            db,
+            suggestion.kind,
+            "automatic",
+            organization_id=admin.organization_id,
+            changed_by=admin.email,
+        )
     before = _crm_and_action_counts(agent_sessions)
 
     response = agent_client.post(
@@ -613,7 +620,7 @@ def test_attention_suggestion_task_rejects_another_customers_enquiry(
     agent_records: dict[str, int],
 ) -> None:
     with agent_sessions() as db:
-        company = Company(company_name="Other Co")
+        company = Company(organization_id=legacy_organization_id(db), company_name="Other Co")
         db.add(company)
         db.flush()
         other = Customer(company_id=company.company_id, customer_name="Other Customer")

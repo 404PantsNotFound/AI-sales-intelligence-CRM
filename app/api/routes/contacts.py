@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, Path, status
 from sqlalchemy.orm import Session
 
+from app.core.security import get_current_user
 from app.database.connection import get_db
+from app.models import User
 from app.schemas.contact import ContactCreate, ContactResponse, ContactUpdate
 from app.services import contact_service
 
@@ -23,8 +25,11 @@ def test_contacts() -> dict[str, str]:
 def create_contact(
     data: ContactCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ContactResponse:
-    return ContactResponse.model_validate(contact_service.create_contact(db, data))
+    return ContactResponse.model_validate(
+        contact_service.create_contact(db, data, organization_id=current_user.organization_id)
+    )
 
 
 @router.get(
@@ -35,8 +40,11 @@ def create_contact(
 def get_contact(
     contact_id: int = Path(ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ContactResponse:
-    return ContactResponse.model_validate(contact_service.get_contact(db, contact_id))
+    return ContactResponse.model_validate(
+        contact_service.get_contact(db, contact_id, organization_id=current_user.organization_id)
+    )
 
 
 @router.put(
@@ -53,9 +61,12 @@ def update_contact(
     data: ContactUpdate,
     contact_id: int = Path(ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ContactResponse:
     return ContactResponse.model_validate(
-        contact_service.update_contact(db, contact_id, data)
+        contact_service.update_contact(
+            db, contact_id, data, organization_id=current_user.organization_id
+        )
     )
 
 
@@ -67,9 +78,12 @@ def update_contact(
 def list_customer_contacts(
     customer_id: int = Path(ge=1),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> list[ContactResponse]:
     return [
         ContactResponse.model_validate(item)
-        for item in contact_service.list_customer_contacts(db, customer_id)
+        for item in contact_service.list_customer_contacts(
+            db, customer_id, organization_id=current_user.organization_id
+        )
     ]
 

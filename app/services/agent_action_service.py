@@ -54,12 +54,13 @@ from app.services import (
     meeting_service,
 )
 from app.services import calendar_sync_service
-from app.services.activity_validation import validate_customer_references
+from app.services.activity_validation import require_customer, validate_customer_references
 from app.schemas.validators import timezone_from_name
 from app.services.scheduling_service import current_time, lock_workspace_schedule
 from app.services.agent_action_state import (
     PendingActionRecord,
     action_fingerprint,
+    authorize_decision,
     pending_actions,
 )
 from app.services.hitl_policy import enforce_action_policy, get_action_policy
@@ -249,6 +250,7 @@ def _validate_proposal_customer_scope(
     validate_customer_references(
         db,
         target_customer_id,
+        organization_id=tool_context.organization_id,
         contact_id=contact_id,
         enquiry_id=enquiry_id,
         meeting_id=meeting_id,
@@ -367,15 +369,19 @@ def propose_or_answer(
     *,
     model: BaseChatModel | None = None,
     user_id: int = 0,
+    organization_id: int,
     history: list[dict[str, str]] | None = None,
 ) -> AgentChatResponse:
     tool_context = AgentToolContext(
+        organization_id=organization_id,
         locked_customer_id=request.customer_id,
         timezone_name=request.timezone_name,
         request_message=request.message,
     )
 
     if request.customer_id is not None:
+        # The client-selected customer counts as retrieved only once it is verified here.
+        require_customer(db, request.customer_id, organization_id=organization_id)
         tool_context.remember_customer(request.customer_id)
 
     prompt = request.message
@@ -475,7 +481,7 @@ def propose_or_answer(
                     tool_context=tool_context,
                     payload=payload,
                 )
-                enforce_action_policy(db, action)
+                enforce_action_policy(db, action, organization_id=organization_id)
                 _, missing_fields = validate_operation(action, payload)
                 if not missing_fields:
                     raise APIError(
@@ -520,10 +526,10 @@ def propose_or_answer(
                 payload=payload,
             )
 
-            enforce_action_policy(db, action)
+            enforce_action_policy(db, action, organization_id=organization_id)
             if (
                 action != "create_meeting"
-                and get_action_policy(db, action) == "automatic"
+                and get_action_policy(db, action, organization_id=organization_id) == "automatic"
             ):
                 pending = pending_actions.add(
                     db,
@@ -572,7 +578,8 @@ def propose_or_answer(
         conflict = tool_context.schedule_conflict
         if (
             conflict is not None
-            and get_action_policy(db, conflict["action"]) != "disabled"
+            and get_action_policy(db, conflict["action"], organization_id=organization_id)
+            != "disabled"
         ):
             # Keep the conflicting request as an editable task; choosing an
             # alternative resubmits it through the task flow, which rechecks
@@ -668,12 +675,17 @@ def _execute_action(
             403,
             "forbidden",
         )
+    # Rechecked at execution: the approver must still share the owner's organization.
+    if actor.organization_id != owner.organization_id:
+        raise APIError("Pending action not found.", 404, "action_not_found")
     if proposal_row.owner_user_id != record.user_id and actor.role != "admin":
         raise APIError(
             "You are not authorized to execute this pending action.",
             403,
             "forbidden",
         )
+    # Every target is checked against the owner's organization, never the payload's.
+    organization_id = owner.organization_id
     expires_at = proposal_row.expires_at
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
@@ -695,7 +707,7 @@ def _execute_action(
             "action_parameters_changed",
         )
 
-    policy = get_action_policy(db, record.action, for_update=True)
+    policy = get_action_policy(db, record.action, organization_id=organization_id, for_update=True)
     if policy == "disabled":
         raise APIError(
             "This action is disabled by the global autonomy policy and cannot execute.",
@@ -742,10 +754,11 @@ def _execute_action(
     if not isinstance(customer_id, int):
         raise APIError("The action target is invalid.", 422, "invalid_action_proposal")
     if record.action in {"create_meeting", "create_followup", "schedule_call"}:
-        lock_workspace_schedule(db)
+        lock_workspace_schedule(db, organization_id)
     validate_customer_references(
         db,
         customer_id,
+        organization_id=organization_id,
         contact_id=record.payload.get("contact_id"),
         enquiry_id=record.payload.get("enquiry_id"),
         meeting_id=record.payload.get("meeting_id"),
@@ -758,6 +771,7 @@ def _execute_action(
         call = call_service.create_call(
             db,
             call_data,
+            organization_id=organization_id,
             defer_commit=True,
         )
         serialized = CallResponse.model_validate(call).model_dump(mode="json")
@@ -774,6 +788,7 @@ def _execute_action(
         meeting = meeting_service.create_meeting(
             db,
             meeting_data,
+            organization_id=organization_id,
             defer_commit=True,
         )
 
@@ -794,6 +809,7 @@ def _execute_action(
         followup = followup_service.create_followup(
             db,
             followup_data,
+            organization_id=organization_id,
             defer_commit=True,
         )
 
@@ -814,6 +830,7 @@ def _execute_action(
         call = call_service.create_call(
             db,
             call_data,
+            organization_id=organization_id,
             defer_commit=True,
         )
 
@@ -851,6 +868,7 @@ def _execute_action(
             enrichment_service.apply_enrichment(
                 db,
                 customer_id=proposal.customer_id,
+                organization_id=organization_id,
                 enquiry_id=proposal.enquiry_id,
                 customer_updates=customer_updates,
                 enquiry_updates=enquiry_updates,
@@ -882,6 +900,7 @@ def _execute_action(
             db,
             customer_id=proposal.customer_id,
             followup_id=proposal.followup_id,
+            organization_id=organization_id,
             defer_commit=True,
         )
 
@@ -909,12 +928,25 @@ def confirm_action(
     is_admin: bool = False,
 ) -> AgentActionResult:
     proposal = db.get(HitlActionProposal, action_id)
+    owner = db.get(User, proposal.owner_user_id) if proposal is not None else None
+    if proposal is not None and owner is not None:
+        # Before reading any policy: another organization's action looks missing.
+        authorize_decision(
+            db,
+            proposal,
+            user_id=user_id,
+            is_admin=is_admin,
+            message="You are not authorized to confirm or cancel this pending action.",
+        )
     if (
         proposal is not None
+        and owner is not None
         and proposal.status == "pending"
-        and (proposal.owner_user_id == user_id or is_admin)
         and _is_agent_action(proposal.action_type)
-        and get_action_policy(db, proposal.action_type) == "disabled"
+        and get_action_policy(
+            db, proposal.action_type, organization_id=owner.organization_id
+        )
+        == "disabled"
     ):
         pending_actions.block_disabled(
             db,

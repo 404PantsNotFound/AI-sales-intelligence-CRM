@@ -37,21 +37,25 @@ def move_activity_to_date(
     record_id: int,
     target_date: date,
     target_timezone: str,
+    *,
+    organization_id: int,
 ) -> ActivityMoveResponse:
     with atomic_transaction(db):
-        lock_workspace_schedule(db)
+        lock_workspace_schedule(db, organization_id)
         if activity_type == "meeting":
-            record: Meeting | Call | FollowUp = get_meeting(db, record_id)
+            record: Meeting | Call | FollowUp = get_meeting(
+                db, record_id, organization_id=organization_id
+            )
             starts_at = record.scheduled_at
             timezone_name = record.scheduled_timezone or "UTC"
             active = record.status == "scheduled"
         elif activity_type == "call":
-            record = get_call(db, record_id)
+            record = get_call(db, record_id, organization_id=organization_id)
             starts_at = record.scheduled_at
             timezone_name = record.scheduled_timezone or "UTC"
             active = record.status == "scheduled"
         else:
-            record = get_followup(db, record_id)
+            record = get_followup(db, record_id, organization_id=organization_id)
             starts_at = record.due_date
             timezone_name = record.due_timezone or "UTC"
             active = record.status in {"pending", "in_progress", "overdue"}
@@ -115,6 +119,7 @@ def move_activity_to_date(
                     scheduled_at=moved_start,
                     scheduled_timezone=timezone_name,
                 ),
+                organization_id=organization_id,
             )
             updated_start = updated.scheduled_at
         elif activity_type == "call":
@@ -125,6 +130,7 @@ def move_activity_to_date(
                     scheduled_at=moved_start,
                     scheduled_timezone=timezone_name,
                 ),
+                organization_id=organization_id,
             )
             updated_start = updated.scheduled_at
         else:
@@ -135,6 +141,7 @@ def move_activity_to_date(
                     due_date=moved_start,
                     due_timezone=timezone_name,
                 ),
+                organization_id=organization_id,
             )
             updated_start = updated.due_date
 

@@ -18,7 +18,7 @@ from app.models import (
     Meeting,
 )
 from app.services.agent_action_service import _NO_CHANGE_MESSAGE
-from tests.conftest import authorize_test_client
+from tests.conftest import authorize_test_client, legacy_organization_id, legacy_organization_id
 from tests.test_agent_actions import ToolCallingFakeChatModel, _count, _tool_call
 
 
@@ -58,7 +58,7 @@ def _texts(messages: list[BaseMessage]) -> list[str]:
 @pytest.fixture
 def second_customer_id(agent_sessions: sessionmaker[Session]) -> int:
     with agent_sessions() as db:
-        company = Company(company_name="Other Co")
+        company = Company(organization_id=legacy_organization_id(db), company_name="Other Co")
         db.add(company)
         db.flush()
         customer = Customer(company=company, customer_name="Other Customer", status="active")
@@ -285,7 +285,8 @@ def test_read_tools_mark_missing_data_timing_and_repeat_calls(
             )
         )
         db.commit()
-    context = AgentToolContext()
+    with agent_sessions() as db:
+        context = AgentToolContext(organization_id=legacy_organization_id(db))
     tools = {
         tool.name: tool
         for tool in build_read_only_tools(context=context, session_factory=agent_sessions)

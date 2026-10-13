@@ -24,6 +24,7 @@ from app.schemas.call import CallCreate
 from app.schemas.meeting import MeetingCreate
 from app.services import call_service, meeting_service
 from app.services.scheduling_service import _workspace_schedule_lock_statement
+from tests.conftest import legacy_organization_id
 
 MYSQL_TEST_URL = os.getenv("MYSQL_TEST_URL")
 pytestmark = pytest.mark.skipif(
@@ -78,7 +79,7 @@ def mysql_sessions(mysql_engine: Engine) -> sessionmaker[Session]:
 @pytest.fixture
 def customer_id(mysql_sessions: sessionmaker[Session]) -> int:
     with mysql_sessions() as db:
-        company = Company(company_name="MySQL Lock Company")
+        company = Company(organization_id=legacy_organization_id(db), company_name="MySQL Lock Company")
         db.add(company)
         db.flush()
         customer = Customer(
@@ -129,7 +130,7 @@ def _race(
     """Queue both writers behind a held workspace lock, then release them together."""
     # Gate is entered last so it exits (releasing the lock) before the pool waits.
     with ThreadPoolExecutor(max_workers=2) as pool, sessions() as gate:
-        assert gate.scalar(_workspace_schedule_lock_statement()) is not None
+        assert gate.scalar(_workspace_schedule_lock_statement(1)) is not None
         connection_ids: list[int] = []
         futures: list[Future[str]] = [
             pool.submit(_attempt, sessions, first, connection_ids),
@@ -152,12 +153,12 @@ def _meeting(customer_id: int, start: datetime, minutes: int) -> Callable[[Sessi
     data = MeetingCreate(
         customer_id=customer_id, scheduled_at=start, duration=minutes, agenda="Race"
     )
-    return lambda db: meeting_service.create_meeting(db, data)
+    return lambda db: meeting_service.create_meeting(db, data, organization_id=legacy_organization_id(db))
 
 
 def _call(customer_id: int, start: datetime, minutes: int) -> Callable[[Session], object]:
     data = CallCreate(customer_id=customer_id, scheduled_at=start, duration=minutes)
-    return lambda db: call_service.create_call(db, data)
+    return lambda db: call_service.create_call(db, data, organization_id=legacy_organization_id(db))
 
 
 def _active_count(sessions: sessionmaker[Session]) -> int:

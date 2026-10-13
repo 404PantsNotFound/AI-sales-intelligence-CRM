@@ -685,7 +685,7 @@ def test_database_unique_constraints_enforce_company_and_customer_uniqueness(
     agent_records: dict[str, int],
 ) -> None:
     with agent_sessions() as db:
-        duplicate_company = Company(company_name="ABC Trading", industry="Duplicate")
+        duplicate_company = Company(organization_id=legacy_organization_id(db), company_name="ABC Trading", industry="Duplicate")
         db.add(duplicate_company)
         with pytest.raises(IntegrityError):
             db.flush()
@@ -732,7 +732,7 @@ def test_customer_snapshot_does_not_execute_duplicate_queries_and_preserves_500_
             return real_call_crm_tool(tools, name, payload)
 
         monkeypatch.setattr(ai_service, "_call_crm_tool", counting_call_crm_tool)
-        snapshot = ai_service._customer_snapshot(db, customer_id)
+        snapshot = ai_service._customer_snapshot(db, customer_id, organization_id=legacy_organization_id(db))
 
         assert snapshot["customer"]["customer_id"] == customer_id
         # Verify get_sales_enquiries and get_customer_activity are NOT redundantly invoked
